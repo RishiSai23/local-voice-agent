@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.env
+
+# Audio
+*.wav
+*.mp3
+
+# Piper models
+*.onnx
+*.onnx.json
+
+# Whisper local files
+whisper.cpp/build/
+whisper.cpp/*.bin
+whisper.cpp/models/
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
