@@ -29,3 +29,5 @@ whisper.cpp/models/
 Thumbs.db
 
 memory.db
+
+assistant_workspace
