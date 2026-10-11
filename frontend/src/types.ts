@@ -37,6 +37,8 @@ export interface UserSettings {
   animationIntensity: AnimationIntensity;
   accentColor: AccentColor;
   audioChimes: boolean;
+  /** Enable spoken replies via the local Piper TTS backend endpoint. */
+  enableTts: boolean;
   useFastApiBackend: boolean;
   fastApiUrl: string;
 }

@@ -186,3 +186,49 @@ export const INITIAL_MESSAGES: ChatMessage[] = [
     status: 'complete',
   },
 ];
+
+/**
+ * Request speech synthesis from the local Piper TTS backend endpoint.
+ *
+ * Returns a blob object URL (audio/wav) that can be set as `Audio.src`.
+ * **The caller must call `URL.revokeObjectURL(url)` after playback or
+ * interruption to release browser memory.**
+ *
+ * Throws a descriptive Error on network failure or HTTP error so the
+ * caller can surface a non-fatal UI notification.  This function never
+ * substitutes cloud or browser TTS.
+ */
+export async function requestSpeech(
+  text: string,
+  backendUrl: string = 'http://localhost:8000'
+): Promise<string> {
+  let response: Response;
+  try {
+    response = await fetch(`${backendUrl}/speak`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+  } catch {
+    throw new Error(
+      `[TTS] Unable to reach Piper TTS endpoint at ${backendUrl}/speak. ` +
+      'Ensure the backend server is running and Piper is installed.'
+    );
+  }
+
+  if (!response.ok) {
+    let detail = `HTTP ${response.status} (${response.statusText || 'Error'})`;
+    try {
+      const errorData = await response.json();
+      if (errorData && typeof errorData.detail === 'string') {
+        detail = errorData.detail;
+      }
+    } catch {
+      // Response was not JSON – keep generic detail string.
+    }
+    throw new Error(`[TTS ERROR ${response.status}] ${detail}`);
+  }
+
+  const blob = await response.blob();
+  return URL.createObjectURL(blob);
+}
