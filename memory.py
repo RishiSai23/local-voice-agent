@@ -1,7 +1,8 @@
 
+from pathlib import Path
 import sqlite3
 
-DB_PATH = "memory.db"
+DB_PATH = Path(__file__).resolve().parent / "memory.db"
 
 
 def initialize_memory():
