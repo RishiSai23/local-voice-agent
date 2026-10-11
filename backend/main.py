@@ -2,6 +2,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from fastapi.responses import Response
+
 # Ensure both backend directory and project root are in sys.path
 BACKEND_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +24,11 @@ try:
         ask_agent,
         get_health,
     )
+    from backend.tts import (
+        PiperSynthesisError,
+        PiperUnavailableError,
+        synthesise_to_wav,
+    )
 except ImportError:
     from agent import (
         OllamaConnectionError,
@@ -29,6 +36,11 @@ except ImportError:
         OllamaTimeoutError,
         ask_agent,
         get_health,
+    )
+    from tts import (
+        PiperSynthesisError,
+        PiperUnavailableError,
+        synthesise_to_wav,
     )
 
 app = FastAPI(
@@ -74,6 +86,7 @@ def root():
         "endpoints": {
             "health": "/health",
             "chat": "/chat",
+            "speak": "/speak",
         },
     }
 
@@ -115,6 +128,84 @@ def chat(request: ChatRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Local assistant processing error: {err}",
         ) from err
+
+
+# ---------------------------------------------------------------------------
+# TTS request / response models
+# ---------------------------------------------------------------------------
+
+TTS_MAX_TEXT_LENGTH = 2000  # characters — keeps Piper latency predictable
+
+
+class SpeakRequest(BaseModel):
+    text: str = Field(..., description="Text to synthesise with Piper TTS")
+
+    @field_validator("text")
+    @classmethod
+    def validate_text(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("text cannot be empty or whitespace only.")
+        stripped = v.strip()
+        if len(stripped) > TTS_MAX_TEXT_LENGTH:
+            raise ValueError(
+                f"text exceeds maximum length of {TTS_MAX_TEXT_LENGTH} characters."
+            )
+        return stripped
+
+
+@app.post("/speak")
+def speak(request: SpeakRequest):
+    """
+    Synthesise *text* with the local Piper TTS engine and return a WAV file.
+
+    The returned audio is audio/wav and can be played directly by the browser
+    via an HTMLAudioElement (URL.createObjectURL on a Blob).
+
+    HTTP error codes
+    ----------------
+    400  text validation failure (empty or too long)
+    422  Pydantic request validation failure
+    503  Piper executable or voice model not found
+    500  Piper synthesis runtime error
+    """
+    # Defence-in-depth: validate again after Pydantic
+    if not request.text or not request.text.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="text cannot be empty or whitespace only.",
+        )
+
+    try:
+        wav_bytes = synthesise_to_wav(request.text)
+    except ValueError as err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(err),
+        ) from err
+    except PiperUnavailableError as err:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(err),
+        ) from err
+    except PiperSynthesisError as err:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(err),
+        ) from err
+    except Exception as err:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unexpected TTS error: {err}",
+        ) from err
+
+    return Response(
+        content=wav_bytes,
+        media_type="audio/wav",
+        headers={
+            # Prevent the browser from caching audio blobs across responses.
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 if __name__ == "__main__":

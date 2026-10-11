@@ -411,6 +411,33 @@ export const SettingsModal: FC<SettingsModalProps> = ({
               />
               <span>Attempt live connection to FastAPI server</span>
             </label>
+
+            {/* Spoken replies via local Piper TTS (Phase 7A). Requires the
+                FastAPI backend above, since /speak is served by the backend. */}
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '12px',
+                color: settings.useFastApiBackend ? '#ffffff' : 'var(--text-muted)',
+                cursor: settings.useFastApiBackend ? 'pointer' : 'not-allowed',
+                marginTop: '10px',
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={settings.enableTts}
+                disabled={!settings.useFastApiBackend}
+                onChange={(e) => onUpdateSettings({ enableTts: e.target.checked })}
+                style={{ width: '16px', height: '16px', accentColor: 'var(--color-primary)' }}
+              />
+              <span>Speak assistant replies aloud (local Piper TTS)</span>
+            </label>
+            <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px', lineHeight: '1.4' }}>
+              Plays real assistant replies through the local <code style={{ color: '#00f0ff' }}>{settings.fastApiUrl}/speak</code> Piper endpoint. Requires the FastAPI backend to be enabled. Text chat always works even if speech is disabled or unavailable.
+            </p>
           </div>
 
           {/* Disclaimer / Guidance Note */}
