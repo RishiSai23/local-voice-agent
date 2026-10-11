@@ -297,6 +297,7 @@ def handle_tool_command(user_text):
         "",
         lower,
     ).strip()
+    clean = re.sub(r"\bdaignostics?\b", "diagnostics", clean)
 
     # ------------------------------------------------------------------ #
     # Application launcher                                                 #

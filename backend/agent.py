@@ -98,7 +98,7 @@ class AssistantEngine:
                 tool_status = self._detect_tool_status(tool_reply)
                 tool_call = {
                     "name": tool_name,
-                    "details": tool_reply,
+                    "details": None,
                     "status": tool_status,
                 }
                 self.history.append({"role": "user", "content": user_text})
@@ -116,7 +116,7 @@ class AssistantEngine:
                 is_failed = "couldn't find" in lower_mem or "don't have that fact" in lower_mem
                 tool_call = {
                     "name": "memory.sqlite",
-                    "details": memory_reply,
+                    "details": None,
                     "status": "failed" if is_failed else "success",
                 }
                 self.history.append({"role": "user", "content": user_text})
@@ -164,6 +164,7 @@ class AssistantEngine:
             "",
             user_text.strip().strip("\"'").lower(),
         ).strip()
+        clean = re.sub(r"\bdaignostics?\b", "diagnostics", clean)
         if any(app in clean for app in ("notepad", "calculator", "calc", "paint")) and any(
             v in clean for v in ("open", "launch", "start", "run")
         ):
