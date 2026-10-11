@@ -11,8 +11,8 @@
 /* Ambient Backlight Bloom */
 .core-ambient-bloom {
   position: absolute;
-  width: clamp(200px, 22vw, 290px);
-  height: clamp(200px, 22vw, 290px);
+  width: min(28vh, 230px);
+  height: min(28vh, 230px);
   border-radius: 50%;
   pointer-events: none;
   filter: blur(48px);
@@ -46,7 +46,8 @@
   position: relative;
   z-index: 2;
   width: 100%;
-  max-width: clamp(230px, 24vw, 310px);
+  max-width: min(28vh, 230px);
+  max-height: min(28vh, 230px);
   height: auto;
   aspect-ratio: 1 / 1;
   cursor: pointer;

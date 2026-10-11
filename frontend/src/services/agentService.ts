@@ -58,7 +58,7 @@ export async function checkBackendHealth(
  */
 export async function sendUserPrompt(
   prompt: string,
-  useBackend: boolean = false,
+  useBackend: boolean = true,
   backendUrl: string = 'http://localhost:8000'
 ): Promise<AgentResponse> {
   const startTime = performance.now();
@@ -165,7 +165,8 @@ export async function sendUserPrompt(
     reply =
       'Application launch protocol verified. When connected to the FastAPI backend, this triggers the native Windows process launcher via tools.open_application().';
   } else {
-    reply = `Command received: "${prompt}". Local Qwen3 8B neural engine is standing by. All protocols are primed for voice automation and tools execution. What shall we work on next, Rishi?`;
+    reply =
+      'Demo Mode is active. Enable the local FastAPI backend in Settings to get real Qwen3 answers.';
   }
 
   const endTime = performance.now();

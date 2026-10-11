@@ -13,14 +13,20 @@ export const ConversationFeed: FC<ConversationFeedProps> = ({
   isThinking,
   onSelectPrompt,
 }) => {
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const feedContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (feedContainerRef.current) {
+      feedContainerRef.current.scrollTo({
+        top: feedContainerRef.current.scrollHeight,
+        behavior: 'smooth',
+      });
+    }
   }, [messages, isThinking]);
 
   return (
     <div
+      ref={feedContainerRef}
       className="jarvis-conversation-feed"
       style={{
         flex: 1,
@@ -235,7 +241,7 @@ export const ConversationFeed: FC<ConversationFeedProps> = ({
                         SYNC
                       </span>
                     </div>
-                    {msg.toolCall.details && (
+                    {msg.toolCall.details && msg.toolCall.details.trim() !== msg.text.trim() && (
                       <div style={{ color: 'var(--text-secondary)', fontSize: '10px', opacity: 0.9 }}>
                         {msg.toolCall.details}
                       </div>
@@ -328,8 +334,6 @@ export const ConversationFeed: FC<ConversationFeedProps> = ({
           </div>
         </div>
       )}
-
-      <div ref={bottomRef} />
     </div>
   );
 };

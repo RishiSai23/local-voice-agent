@@ -19,7 +19,7 @@ const DEFAULT_SETTINGS: UserSettings = {
   accentColor: 'cyan',
   audioChimes: true,
   enableTts: false,
-  useFastApiBackend: false,
+  useFastApiBackend: true,
   fastApiUrl: 'http://localhost:8000',
 };
 
@@ -171,7 +171,7 @@ function App() {
    * - Errors here are non-fatal: text chat is always preserved.
    */
   const playSpeechReply = useCallback(
-    async (text: string) => {
+    async (text: string, onReady?: () => void) => {
       // Stop any previous playback before starting a new one. This also
       // invalidates the previous token so its callbacks become no-ops.
       stopAudio();
@@ -186,6 +186,7 @@ function App() {
       } catch (err: unknown) {
         // A newer interaction may have started while awaiting synthesis.
         if (isCurrent()) {
+          onReady?.();
           const msg = err instanceof Error ? err.message : 'TTS request failed.';
           setMessages((prev) => [
             ...prev,
@@ -213,6 +214,9 @@ function App() {
       audioBlobUrlRef.current = blobUrl;
       const audio = new Audio(blobUrl);
       audioRef.current = audio;
+
+      // Reveal text simultaneously as audio is ready and handed to playback
+      onReady?.();
 
       audio.onplay = () => {
         if (!isCurrent()) return;
@@ -332,16 +336,29 @@ function App() {
         status: 'complete',
       };
 
-      setMessages((prev) => [...prev, assistantMessage]);
-      setIsThinking(false);
-
       // --- TTS playback path ---
       // Only speak when BOTH the live backend AND TTS are enabled.
       // Never speak demo responses or initial messages.
       if (settings.useFastApiBackend && settings.enableTts) {
-        // playSpeechReply sets coreState to 'speaking' via audio.onplay.
-        await playSpeechReply(response.reply);
+        let revealed = false;
+        const revealMessage = () => {
+          if (!revealed) {
+            revealed = true;
+            setMessages((prev) => [...prev, assistantMessage]);
+            setIsThinking(false);
+          }
+        };
+
+        try {
+          // Synchronized delivery: wait for Piper synthesis so the visible message
+          // and audible speech start as a single unified interaction.
+          await playSpeechReply(response.reply, revealMessage);
+        } finally {
+          revealMessage();
+        }
       } else {
+        setMessages((prev) => [...prev, assistantMessage]);
+        setIsThinking(false);
         // Text-only path: brief visual SPEAKING pulse, then idle.
         setCoreState('speaking');
         setTimeout(() => {
