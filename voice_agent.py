@@ -178,7 +178,16 @@ def ask_qwen(message, history, memories):
         timeout=120,
     )
     response.raise_for_status()
-    return response.json()["message"]["content"].strip()
+    raw = response.json()["message"]["content"].strip()
+
+    # Qwen3 models emit <think>…</think> reasoning blocks before the visible
+    # reply.  Strip them so the user never sees raw internal monologue.
+    stripped = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+
+    # Guard: if stripping removes everything (model produced only a think
+    # block and nothing else), fall back to the raw text so the caller
+    # always receives a non-empty string.
+    return stripped if stripped else raw
 
 
 def _canonical_memory_key(raw_key):
@@ -271,68 +280,200 @@ def handle_memory_command(user_text):
     return None
 
 def handle_tool_command(user_text):
-    """Route a small set of explicit local commands to safe, predefined tools."""
+    """Route a small set of explicit local commands to safe, predefined tools.
+
+    Returns a string reply when a command is recognized and executed, or None
+    when the message should be forwarded to the LLM.  A failed tool execution
+    always returns a truthful error string rather than raising an exception.
+    """
     text = user_text.strip().strip("\"'")
     normalized = re.sub(r"[.!?]+$", "", text).strip()
     lower = re.sub(r"\s+", " ", normalized.lower())
 
-    # Application launcher: only apps present in tools.APP_ALLOWLIST are available.
-    app_match = re.match(
-        r"^(?:please\s+)?(?:open|launch|start)\s+(?:the\s+)?(notepad|calculator|calc|paint)(?:\s+app)?$",
+    # Strip polite prefixes and common conversational fillers so that the
+    # remaining `clean` string can be matched against intent patterns.
+    clean = re.sub(
+        r"^(?:(?:hey|ok|okay)\s+)?(?:jarvis[,\s]+)?(?:please\s+)?(?:can\s+you\s+|could\s+you\s+|would\s+you\s+)?(?:please\s+)?",
+        "",
         lower,
+    ).strip()
+
+    # ------------------------------------------------------------------ #
+    # Application launcher                                                 #
+    # Only apps present in tools.APP_ALLOWLIST are permitted.              #
+    # ------------------------------------------------------------------ #
+    app_match = re.match(
+        r"^(?:open|launch|start|run)\s+(?:the\s+)?(notepad|calculator|calc|paint)(?:\s+app|\s+application)?$",
+        clean,
     )
     if app_match:
         app = app_match.group(1)
         if app == "calc":
             app = "calculator"
-        return open_application(app)
+        try:
+            return open_application(app)
+        except Exception as error:  # noqa: BLE001
+            return f"Could not open {app}: {error}"
 
-    # System information.
-    system_phrases = {
+    # ------------------------------------------------------------------ #
+    # System information                                                   #
+    #                                                                      #
+    # Matches explicit requests for local machine info without reaching    #
+    # the LLM.  The patterns are deliberately narrow to avoid accidentally  #
+    # capturing general questions about computers or operating systems.     #
+    # ------------------------------------------------------------------ #
+
+    # Pattern A: imperative verb + optional filler + noun + optional noun-suffix.
+    # The (?:\s+me)? group handles "send me system info", "get me system details",
+    # etc., where "me" sits between the verb and the modifier/noun.
+    _SYS_INFO_VERB = bool(
+        re.match(
+            r"^(?:send|show|get|give(?:\s+me)?|tell(?:\s+me)?(?:\s+about)?|display|view|fetch|check|print|provide|run|report)"
+            r"(?:\s+me)?\s+"
+            r"(?:full\s+|all\s+|my\s+|the\s+|this\s+|local\s+)*"
+            r"(?:system|computer|machine|hardware|device|pc)"
+            r"(?:\s+(?:info|information|details|specs|specifications|status|diagnostic|diagnostics|health))?"
+            r"(?:\s+(?:and\s+check\s+.*|tolerances))?$",
+            clean,
+        )
+    )
+
+    # Pattern B: noun-first (no leading verb): "system info", "hardware specs", …
+    _SYS_INFO_NOUN_FIRST = bool(
+        re.match(
+            r"^(?:full\s+|all\s+|my\s+|the\s+|this\s+|local\s+)*"
+            r"(?:system|computer|machine|hardware|device|pc)\s+"
+            r"(?:info|information|details|specs|specifications|status|diagnostic|diagnostics|health)$",
+            clean,
+        )
+    )
+
+    # Pattern C: "what is/are my/the system info"
+    _SYS_INFO_WHAT = bool(
+        re.match(
+            r"^what\s+(?:is|are)\s+(?:my\s+|the\s+|this\s+)?(?:system|computer|hardware|machine)\s+"
+            r"(?:info|information|details|specs|specifications|status)$",
+            clean,
+        )
+        or re.match(
+            r"^what\s+(?:is|are)\s+my\s+(?:system\s+specs|specs|specifications)$",
+            clean,
+        )
+    )
+
+    # Pattern D: "tell me about this/my computer/system"
+    _SYS_INFO_TELL = bool(
+        re.match(
+            r"^tell\s+me\s+about\s+(?:this\s+|my\s+)(?:computer|system|machine|pc)$",
+            clean,
+        )
+    )
+
+    # Belt-and-suspenders exact-match set for the most common phrasings.
+    # These are checked after the regex patterns so the patterns remain the
+    # authoritative source; the set catches any edge-case normalization gaps.
+    _SYS_INFO_EXACT = clean in {
         "system info",
         "system information",
+        "send system info",
+        "show system info",
+        "get system info",
+        "show system information",
+        "get system details",
+        "get system information",
         "computer info",
         "computer information",
-        "show system info",
-        "show system information",
-        "show computer info",
-        "show computer information",
-        "tell me my system information",
-        "tell me about this computer",
-        "what are my system specs",
-        "what is my system information",
-        "what is my computer information",
+        "hardware info",
+        "hardware specs",
+        "system specs",
+        "system details",
+        "computer details",
+        "machine info",
+        "machine details",
     }
-    if lower in system_phrases:
-        info = get_system_info()
-        return (
-            f"Your operating system is {info.get('operating_system', 'unknown')}. "
-            f"Your Python version is {info.get('python_version', 'unknown')}. "
-            f"You have {info.get('cpu_cores', 'unknown')} logical CPU cores, "
-            f"and {info.get('disk_free_gb', 'unknown')} gigabytes of free disk space."
-        )
 
-    # List workspace files.
-    list_request = (
-        any(word in lower.split() for word in ("list", "show", "display"))
-        and "file" in lower
-        and any(word in lower for word in ("workspace", "folder", "files"))
+    is_system_info = _SYS_INFO_VERB or _SYS_INFO_NOUN_FIRST or _SYS_INFO_WHAT or _SYS_INFO_TELL or _SYS_INFO_EXACT
+
+    if is_system_info:
+        try:
+            info = get_system_info()
+            return (
+                f"Your operating system is {info.get('operating_system', 'unknown')}. "
+                f"Your Python version is {info.get('python_version', 'unknown')}. "
+                f"You have {info.get('cpu_cores', 'unknown')} logical CPU cores, "
+                f"and {info.get('disk_free_gb', 'unknown')} gigabytes of free disk space."
+            )
+        except Exception as error:  # noqa: BLE001
+            return f"Could not retrieve system information: {error}"
+
+    # ------------------------------------------------------------------ #
+    # List workspace files                                                 #
+    # ------------------------------------------------------------------ #
+
+    # Pattern: explicit list/show/etc. verb followed by workspace context.
+    _LIST_FILES_VERB = bool(
+        re.match(
+            r"^(?:list|show|display|view|get|see|check|print)\s+"
+            r"(?:all\s+)?(?:my\s+|the\s+)?(?:assistant\s+)?"
+            r"(?:workspace\s+files|workspace\s+directory|workspace\s+folder|workspace"
+            r"|files\s+(?:in|from)\s+(?:my\s+|the\s+)?(?:assistant\s+)?workspace|files)$",
+            clean,
+        )
     )
-    if list_request or lower in {
+
+    # Pattern: "what files/items are in my workspace"
+    _LIST_FILES_WHAT = bool(
+        re.match(
+            r"^what\s+(?:files|items)(?:\s+and\s+models)?\s+are\s+in\s+(?:my\s+|the\s+)?(?:assistant\s+)?workspace$",
+            clean,
+        )
+        or re.match(
+            r"^what\s+(?:files|items)\s+do\s+i\s+have(?:\s+in\s+(?:my\s+|the\s+)?(?:assistant\s+)?workspace)?$",
+            clean,
+        )
+        or re.match(
+            r"^what\s+is\s+in\s+(?:my\s+|the\s+)?(?:assistant\s+)?workspace$",
+            clean,
+        )
+    )
+
+    # Belt-and-suspenders exact-match set.
+    _LIST_FILES_EXACT = clean in {
         "list files",
         "show files",
+        "get files",
         "list workspace",
         "show workspace",
-        "what files are in my workspace",
-    }:
-        files = list_files()
-        if not files:
-            return "Your assistant workspace is empty."
-        return "Your workspace contains: " + ", ".join(files)
+        "get workspace",
+        "list workspace files",
+        "show workspace files",
+        "get workspace files",
+        "show my workspace files",
+        "list my workspace files",
+        "get my workspace files",
+        "workspace files",
+        "my workspace files",
+    }
 
-    # Read a file from the workspace.
+    is_list_files = _LIST_FILES_VERB or _LIST_FILES_WHAT or _LIST_FILES_EXACT
+
+    if is_list_files:
+        try:
+            files = list_files()
+            if not files:
+                return "Your assistant workspace is empty."
+            return "Your workspace contains: " + ", ".join(files)
+        except Exception as error:  # noqa: BLE001
+            return f"I couldn't list workspace files: {error}"
+
+    # ------------------------------------------------------------------ #
+    # Read a file from the workspace                                       #
+    # ------------------------------------------------------------------ #
     read_match = re.match(
-        r"^(?:please\s+)?(?:read|display|show)\s+(?:the\s+)?(?:file\s+)?([a-zA-Z0-9_. -]+\.[a-zA-Z0-9]+)(?:\s+from\s+(?:my\s+)?workspace)?$",
+        r"^(?:(?:hey|ok|okay)\s+)?(?:jarvis[,\s]+)?(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?"
+        r"(?:read|display|show|view|print|get|open)\s+(?:the\s+)?(?:contents\s+of\s+)?(?:file\s+)?"
+        r"([a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+)"
+        r"(?:\s+(?:from|in)\s+(?:my\s+|the\s+)?(?:assistant\s+)?workspace)?$",
         normalized,
         re.I,
     )
@@ -340,15 +481,23 @@ def handle_tool_command(user_text):
         filename = read_match.group(1).strip()
         try:
             contents = read_file(filename)
-        except (OSError, ValueError) as error:
+        except Exception as error:  # noqa: BLE001
             return f"I couldn't read that file: {error}"
         if contents == "File not found.":
             return f"I couldn't find {filename} in your assistant workspace."
+        if contents == "This file type is not allowed for reading.":
+            return "This file type is not allowed for reading."
         return f"Contents of {filename}: {contents}"
 
-    # Create a file; content is optional. Existing files are never overwritten.
+    # ------------------------------------------------------------------ #
+    # Create a file in the workspace                                       #
+    # Existing files are never silently overwritten.                       #
+    # ------------------------------------------------------------------ #
     create_match = re.match(
-        r"^(?:please\s+)?(?:create|make|write)\s+(?:a\s+)?(?:new\s+)?file\s+(?:called\s+|named\s+)?([a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+)(?:\s+(?:with\s+content|containing|with\s+text|with\s+the\s+text)\s+(.+))?$",
+        r"^(?:(?:hey|ok|okay)\s+)?(?:jarvis[,\s]+)?(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?"
+        r"(?:create|make|write|save)\s+(?:a\s+)?(?:new\s+)?file\s+(?:called\s+|named\s+)?"
+        r"([a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+)"
+        r"(?:\s+(?:with\s+content|containing|with\s+text|with\s+the\s+text|with)\s+(.+))?$",
         normalized,
         re.I,
     )
@@ -357,7 +506,7 @@ def handle_tool_command(user_text):
         content = (create_match.group(2) or "").strip().strip("\"'")
         try:
             return create_file(filename, content)
-        except (OSError, ValueError) as error:
+        except Exception as error:  # noqa: BLE001
             return f"I couldn't create that file: {error}"
 
     return None

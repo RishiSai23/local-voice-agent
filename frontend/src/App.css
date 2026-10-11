@@ -1,0 +1,107 @@
+/* J.A.R.V.I.S. Main Application Layout & Responsive Grid */
+
+.jarvis-main-layout {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(360px, 440px) 1fr;
+  width: 100%;
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 14px 20px 18px;
+  gap: 18px;
+  height: calc(100vh - 65px);
+  max-height: 960px;
+  box-sizing: border-box;
+}
+
+/* Left Intelligence Deck */
+.jarvis-intelligence-deck {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  gap: 8px;
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.jarvis-core-wrapper {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  margin-top: 2px;
+}
+
+/* Right Tactical Deck */
+.jarvis-tactical-deck {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+/* Chat Deck */
+.jarvis-chat-deck {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  position: relative;
+}
+
+/* Header Center Display Responsive Rules */
+@media (min-width: 768px) {
+  .hud-header-center {
+    display: flex !important;
+  }
+  .hud-settings-text {
+    display: inline !important;
+  }
+}
+
+/* Responsive Viewports (Tablets & Mobile < 1024px) */
+@media (max-width: 1023px) {
+  .jarvis-main-layout {
+    grid-template-columns: 1fr;
+    height: auto;
+    max-height: none;
+    padding: 12px 14px 20px;
+    gap: 16px;
+    overflow-y: visible;
+  }
+  
+  .jarvis-intelligence-deck {
+    height: auto;
+    overflow-y: visible;
+    padding: 14px 14px 16px;
+    gap: 12px;
+  }
+
+  .jarvis-tactical-deck {
+    height: auto;
+  }
+
+  .jarvis-chat-deck {
+    height: 520px;
+  }
+}
+
+@media (max-width: 640px) {
+  .jarvis-main-layout {
+    padding: 8px 10px 16px;
+    gap: 12px;
+  }
+
+  .jarvis-chat-deck {
+    height: 460px;
+  }
+}

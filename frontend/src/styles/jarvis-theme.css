@@ -1,0 +1,228 @@
+/* J.A.R.V.I.S. Design System & Theme Variables */
+
+:root {
+  /* Color Palettes */
+  --bg-space: #030712;
+  --bg-deep: #050b18;
+  --bg-surface: rgba(8, 16, 36, 0.75);
+  --bg-surface-elevated: rgba(12, 24, 52, 0.85);
+  --bg-glass-input: rgba(5, 12, 28, 0.8);
+  
+  /* Primary Arc Cyan Theme (Default) */
+  --color-primary: #00f0ff;
+  --color-primary-bright: #38bdf8;
+  --color-primary-dim: rgba(0, 240, 255, 0.15);
+  --color-primary-border: rgba(0, 240, 255, 0.28);
+  --glow-primary: rgba(0, 240, 255, 0.4);
+  --glow-secondary: rgba(56, 189, 248, 0.3);
+  --glow-bright: rgba(0, 240, 255, 0.8);
+
+  /* Secondary Accents */
+  --color-accent-violet: #8b5cf6;
+  --color-accent-violet-dim: rgba(139, 92, 246, 0.2);
+  --color-accent-amber: #f59e0b;
+  --color-accent-emerald: #10b981;
+  --color-danger: #ef4444;
+
+  /* Typography Colors */
+  --text-pure: #f8fafc;
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --text-dim: #475569;
+
+  /* Fonts */
+  --font-hud: 'Rajdhani', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+
+  /* HUD Radii & Borders */
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-full: 9999px;
+  --border-hud: 1px solid var(--color-primary-border);
+}
+
+/* Accent Themes */
+[data-accent="arc-blue"] {
+  --color-primary: #0284c7;
+  --color-primary-bright: #38bdf8;
+  --color-primary-dim: rgba(2, 132, 199, 0.18);
+  --color-primary-border: rgba(56, 189, 248, 0.3);
+  --glow-primary: rgba(2, 132, 199, 0.45);
+  --glow-bright: rgba(56, 189, 248, 0.85);
+}
+
+[data-accent="violet"] {
+  --color-primary: #a855f7;
+  --color-primary-bright: #c084fc;
+  --color-primary-dim: rgba(168, 85, 247, 0.18);
+  --color-primary-border: rgba(192, 132, 252, 0.32);
+  --glow-primary: rgba(168, 85, 247, 0.45);
+  --glow-bright: rgba(192, 132, 252, 0.85);
+}
+
+[data-accent="amber"] {
+  --color-primary: #f59e0b;
+  --color-primary-bright: #fbbf24;
+  --color-primary-dim: rgba(245, 158, 11, 0.18);
+  --color-primary-border: rgba(251, 191, 36, 0.32);
+  --glow-primary: rgba(245, 158, 11, 0.45);
+  --glow-bright: rgba(251, 191, 36, 0.85);
+}
+
+/* Layout Container */
+.jarvis-container {
+  position: relative;
+  min-height: 100vh;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-space);
+  background-image: 
+    radial-gradient(circle at 50% 28%, rgba(0, 240, 255, 0.08) 0%, transparent 60%),
+    radial-gradient(circle at 10% 85%, rgba(139, 92, 246, 0.05) 0%, transparent 45%),
+    linear-gradient(rgba(0, 240, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 240, 255, 0.02) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 36px 36px, 36px 36px;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  overflow-x: hidden;
+}
+
+/* Subtle HUD Scanline Overlay (non-distracting) */
+.jarvis-scanlines {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  background: linear-gradient(
+    rgba(255, 255, 255, 0) 50%,
+    rgba(0, 0, 0, 0.15) 50%
+  );
+  background-size: 100% 4px;
+  opacity: 0.35;
+  z-index: 99;
+}
+
+/* Glass Surface Utility */
+.hud-glass-panel {
+  background: var(--bg-surface);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--color-primary-border);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5), inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-md);
+  position: relative;
+}
+
+/* HUD Tech Corner Ticks */
+.hud-corner-brackets::before,
+.hud-corner-brackets::after {
+  content: '';
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  pointer-events: none;
+  transition: all 0.3s ease;
+}
+
+.hud-corner-brackets::before {
+  top: -1px;
+  left: -1px;
+  border-top: 2px solid var(--color-primary);
+  border-left: 2px solid var(--color-primary);
+}
+
+.hud-corner-brackets::after {
+  bottom: -1px;
+  right: -1px;
+  border-bottom: 2px solid var(--color-primary);
+  border-right: 2px solid var(--color-primary);
+}
+
+/* Glowing Interactive Elements */
+.hud-glow-btn {
+  background: var(--color-primary-dim);
+  border: 1px solid var(--color-primary-border);
+  color: var(--color-primary);
+  font-family: var(--font-hud);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 0 12px rgba(0, 240, 255, 0.08);
+}
+
+.hud-glow-btn:hover {
+  background: rgba(0, 240, 255, 0.22);
+  border-color: var(--color-primary);
+  color: #ffffff;
+  box-shadow: 0 0 20px var(--glow-primary);
+  transform: translateY(-1px);
+}
+
+.hud-glow-btn:active {
+  transform: translateY(1px) scale(0.98);
+}
+
+.hud-glow-btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* Badge Utility */
+.hud-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  background: rgba(0, 240, 255, 0.08);
+  border: 1px solid rgba(0, 240, 255, 0.2);
+  color: var(--color-primary-bright);
+}
+
+.hud-badge.success {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.3);
+  color: #34d399;
+}
+
+.hud-badge.warning {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.3);
+  color: #fbbf24;
+}
+
+/* Custom Futuristic Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(3, 7, 18, 0.5);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 240, 255, 0.25);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-primary);
+  box-shadow: 0 0 8px var(--glow-primary);
+}
