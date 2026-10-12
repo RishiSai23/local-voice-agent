@@ -1,8 +1,9 @@
 import { type FC, useMemo } from 'react';
+import type { CoreState } from '../types';
 
 interface GreetingProps {
   userName?: string;
-  coreState: string;
+  coreState: CoreState;
 }
 
 export const Greeting: FC<GreetingProps> = ({ userName = 'RISHI', coreState }) => {
@@ -17,12 +18,22 @@ export const Greeting: FC<GreetingProps> = ({ userName = 'RISHI', coreState }) =
     switch (coreState) {
       case 'listening':
         return 'ACOUSTIC SENSORS ACTIVE • AWAITING SPEECH INPUT';
+      case 'transcribing':
+        return 'WHISPER STT PROCESSING • DECODING AUDIO STREAM';
       case 'thinking':
         return 'NEURAL QUANTUM COMPUTE IN PROGRESS • SYNTHESIZING';
       case 'speaking':
         return 'PIPER TTS SPEECH STREAM ACTIVE • TRANSMITTING AUDIO';
       default:
         return 'ALL SYSTEMS STANDING BY • 100% PRIVATE & OFFLINE';
+    }
+  }, [coreState]);
+
+  const dotColor = useMemo(() => {
+    switch (coreState) {
+      case 'thinking':     return 'var(--color-accent-violet)';
+      case 'transcribing': return '#fbbf24';
+      default:             return 'var(--color-primary)';
     }
   }, [coreState]);
 
@@ -64,8 +75,9 @@ export const Greeting: FC<GreetingProps> = ({ userName = 'RISHI', coreState }) =
             width: '5px',
             height: '5px',
             borderRadius: '50%',
-            backgroundColor: coreState === 'thinking' ? 'var(--color-accent-violet)' : 'var(--color-primary)',
-            boxShadow: `0 0 6px ${coreState === 'thinking' ? 'var(--color-accent-violet)' : 'var(--color-primary)'}`,
+            backgroundColor: dotColor,
+            boxShadow: `0 0 6px ${dotColor}`,
+            transition: 'background-color 0.4s ease, box-shadow 0.4s ease',
           }}
         />
         <span
@@ -91,7 +103,7 @@ export const Greeting: FC<GreetingProps> = ({ userName = 'RISHI', coreState }) =
           letterSpacing: '0.03em',
         }}
       >
-        “Your intelligence. Your machine. Your rules.”
+        "Your intelligence. Your machine. Your rules."
       </p>
     </div>
   );

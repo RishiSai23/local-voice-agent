@@ -24,17 +24,25 @@ export const AiCore: FC<AiCoreProps> = ({ state, onCycleState }) => {
     });
   }, []);
 
-  // Generate 24 radial waveform equalizer spokes for speaking/listening states
+  // Generate radial waveform spokes — geometry varies per state but is
+  // computed as a stable memo so the SVG elements stay mounted (no remount
+  // flicker). CSS classes handle the animation changes.
   const spectrumSpokes = useMemo(() => {
     return Array.from({ length: 24 }).map((_, i) => {
       const angle = (i * 360) / 24;
       const rad = (angle * Math.PI) / 180;
       const baseR = 92;
-      const length = state === 'speaking'
-        ? 12 + ((i % 4) * 5)
-        : state === 'listening'
-        ? 8 + ((i % 3) * 4)
-        : 4;
+      // Use a moderate fixed length; per-state visual differences come from
+      // CSS animation (stroke-width oscillation, opacity) rather than
+      // re-computing geometry on every state change.
+      const length =
+        state === 'speaking'
+          ? 12 + ((i % 4) * 5)
+          : state === 'listening'
+          ? 8 + ((i % 3) * 4)
+          : state === 'transcribing'
+          ? 6 + ((i % 5) * 3)
+          : 4;
       const x1 = 200 + baseR * Math.cos(rad);
       const y1 = 200 + baseR * Math.sin(rad);
       const x2 = 200 + (baseR + length) * Math.cos(rad);
@@ -43,10 +51,27 @@ export const AiCore: FC<AiCoreProps> = ({ state, onCycleState }) => {
     });
   }, [state]);
 
+  // Data-stream particles for the transcribing state — 8 small arcs that
+  // orbit the inner iris to indicate Whisper processing.
+  const dataStreamArcs = useMemo(() => {
+    return Array.from({ length: 8 }).map((_, i) => {
+      const angleDeg = (i * 360) / 8;
+      const rad = (angleDeg * Math.PI) / 180;
+      const r = 110;
+      const cx = 200 + r * Math.cos(rad);
+      const cy = 200 + r * Math.sin(rad);
+      return { cx, cy, i };
+    });
+  }, []);
+
   const stateClass = `state-${state}`;
 
   return (
-    <div className="ai-core-container" onClick={onCycleState} title="Click to cycle intelligence states (Demo)">
+    <div
+      className="ai-core-container"
+      onClick={onCycleState}
+      title="Click to cycle intelligence states (Demo)"
+    >
       {/* Background Ambient Atmospheric Bloom */}
       <div className={`core-ambient-bloom ${stateClass}`} />
 
@@ -80,12 +105,41 @@ export const AiCore: FC<AiCoreProps> = ({ state, onCycleState }) => {
             </feMerge>
           </filter>
 
-          {/* Luminous Reactor Nucleus Gradient */}
+          {/* Amber/Gold Filter for Transcribing state */}
+          <filter id="amberGlow" x="-30%" y="-30%" width="160%" height="160%">
+            <feGaussianBlur stdDeviation="5" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+
+          {/* Luminous Reactor Nucleus Gradient — color shifts per state */}
           <radialGradient id="nucleusGrad" cx="50%" cy="50%" r="50%">
             <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
             <stop offset="35%" stopColor="#7dd3fc" stopOpacity="0.95" />
-            <stop offset="65%" stopColor={state === 'thinking' ? '#c084fc' : '#00f0ff'} stopOpacity="0.8" />
-            <stop offset="100%" stopColor={state === 'thinking' ? '#7e22ce' : '#0369a1'} stopOpacity="0.1" />
+            <stop
+              offset="65%"
+              stopColor={
+                state === 'thinking'
+                  ? '#c084fc'
+                  : state === 'transcribing'
+                  ? '#fbbf24'
+                  : '#00f0ff'
+              }
+              stopOpacity="0.8"
+            />
+            <stop
+              offset="100%"
+              stopColor={
+                state === 'thinking'
+                  ? '#7e22ce'
+                  : state === 'transcribing'
+                  ? '#92400e'
+                  : '#0369a1'
+              }
+              stopOpacity="0.1"
+            />
           </radialGradient>
 
           {/* Inner Iris Gradient */}
@@ -95,11 +149,28 @@ export const AiCore: FC<AiCoreProps> = ({ state, onCycleState }) => {
           </radialGradient>
         </defs>
 
-        {/* --- LAYER 1: ACOUSTIC EXPANSION WAVES (Smooth Opacity Transition) --- */}
+        {/* --- LAYER 1: ACOUSTIC EXPANSION WAVES (Listening & Speaking states) --- */}
         <g className="core-acoustic-waves">
           <circle cx="200" cy="200" r="70" stroke="var(--color-primary)" strokeOpacity="0.8" fill="none" className="ripple-wave-1" />
           <circle cx="200" cy="200" r="55" stroke="var(--color-primary-bright)" strokeOpacity="0.7" fill="none" className="ripple-wave-2" />
           <circle cx="200" cy="200" r="40" stroke="var(--color-accent-violet)" strokeOpacity="0.6" fill="none" className="ripple-wave-3" />
+        </g>
+
+        {/* --- LAYER 1B: DATA-STREAM ORBIT (Transcribing state only) --- */}
+        <g className="core-data-stream">
+          {dataStreamArcs.map(({ cx, cy, i }) => (
+            <circle
+              key={i}
+              cx={cx}
+              cy={cy}
+              r="3.5"
+              fill="#fbbf24"
+              fillOpacity="0.9"
+              filter="url(#amberGlow)"
+              className="data-stream-dot"
+              style={{ animationDelay: `${i * 0.12}s` }}
+            />
+          ))}
         </g>
 
         {/* --- LAYER 2: OUTER TECHNICAL HUD RETICLE (Ring 1) --- */}
@@ -140,14 +211,26 @@ export const AiCore: FC<AiCoreProps> = ({ state, onCycleState }) => {
             strokeDasharray="25 15 50 15"
             filter="url(#neonGlow)"
           />
-          {/* Segment B */}
+          {/* Segment B — violet for thinking, amber for transcribing */}
           <path
             d="M 200 352 A 152 152 0 0 1 48 200"
-            stroke={state === 'thinking' ? 'var(--color-accent-violet)' : 'var(--color-primary)'}
+            stroke={
+              state === 'thinking'
+                ? 'var(--color-accent-violet)'
+                : state === 'transcribing'
+                ? '#fbbf24'
+                : 'var(--color-primary)'
+            }
             strokeWidth="3"
             strokeLinecap="round"
             strokeDasharray="40 20 20 20"
-            filter={state === 'thinking' ? 'url(#violetGlow)' : 'url(#neonGlow)'}
+            filter={
+              state === 'thinking'
+                ? 'url(#violetGlow)'
+                : state === 'transcribing'
+                ? 'url(#amberGlow)'
+                : 'url(#neonGlow)'
+            }
           />
           {/* Segment C */}
           <path
@@ -169,6 +252,12 @@ export const AiCore: FC<AiCoreProps> = ({ state, onCycleState }) => {
           <circle cx="200" cy="200" r="142" stroke="var(--color-accent-violet)" strokeWidth="2" strokeDasharray="25 15 8 15" filter="url(#violetGlow)" />
           <circle cx="200" cy="200" r="118" stroke="#c084fc" strokeWidth="1.5" strokeDasharray="18 36" filter="url(#violetGlow)" />
           <path d="M 200 58 L 200 78 M 342 200 L 322 200 M 200 342 L 200 322 M 58 200 L 78 200" stroke="#f3e8ff" strokeWidth="2" strokeLinecap="round" />
+        </g>
+
+        {/* --- LAYER 3C: TRANSCRIBING DATA-PARSE RING --- */}
+        <g className="ring-transcribing-parse">
+          <circle cx="200" cy="200" r="138" stroke="#fbbf24" strokeWidth="1.5" strokeDasharray="6 12 18 12" filter="url(#amberGlow)" />
+          <circle cx="200" cy="200" r="120" stroke="#f59e0b" strokeWidth="1" strokeDasharray="12 24" filter="url(#amberGlow)" />
         </g>
 
         {/* --- LAYER 4: ORBITAL SATELLITES & QUANTUM NODES (Ring 3) --- */}
@@ -219,7 +308,13 @@ export const AiCore: FC<AiCoreProps> = ({ state, onCycleState }) => {
               y1={s.y1}
               x2={s.x2}
               y2={s.y2}
-              stroke={state === 'thinking' ? 'var(--color-accent-violet)' : 'var(--color-primary-bright)'}
+              stroke={
+                state === 'thinking'
+                  ? 'var(--color-accent-violet)'
+                  : state === 'transcribing'
+                  ? '#fbbf24'
+                  : 'var(--color-primary-bright)'
+              }
               strokeWidth="2.5"
               strokeLinecap="round"
               className="frequency-spoke"
@@ -248,7 +343,13 @@ export const AiCore: FC<AiCoreProps> = ({ state, onCycleState }) => {
             cy="200"
             r="44"
             fill="url(#nucleusGrad)"
-            filter={state === 'thinking' ? 'url(#violetGlow)' : 'url(#neonGlow)'}
+            filter={
+              state === 'thinking'
+                ? 'url(#violetGlow)'
+                : state === 'transcribing'
+                ? 'url(#amberGlow)'
+                : 'url(#neonGlow)'
+            }
           />
           {/* Inner Geometric Lattice */}
           <polygon
@@ -260,7 +361,13 @@ export const AiCore: FC<AiCoreProps> = ({ state, onCycleState }) => {
           />
           <polygon
             points="200,234 170,183 230,183"
-            stroke={state === 'thinking' ? '#f3e8ff' : '#7dd3fc'}
+            stroke={
+              state === 'thinking'
+                ? '#f3e8ff'
+                : state === 'transcribing'
+                ? '#fde68a'
+                : '#7dd3fc'
+            }
             strokeWidth="1.2"
             strokeOpacity="0.75"
             fill="none"

@@ -81,6 +81,7 @@ function App() {
       URL.revokeObjectURL(audioBlobUrlRef.current);
       audioBlobUrlRef.current = null;
     }
+    setCoreState((current) => (current === 'speaking' ? 'idle' : current));
   }, []);
 
   // Ensure audio is cleaned up when the component unmounts.
@@ -136,19 +137,38 @@ function App() {
 
   // Cycle through states on AI Core click (Interactive demo feature)
   const handleCycleState = () => {
-    const states: CoreState[] = ['idle', 'listening', 'thinking', 'speaking'];
+    const states: CoreState[] = ['idle', 'listening', 'transcribing', 'thinking', 'speaking'];
     const currentIndex = states.indexOf(coreState);
     const nextState = states[(currentIndex + 1) % states.length];
     setCoreState(nextState);
   };
 
-  // Microphone Demo Trigger (Phase 2 Simulation)
-  const handleTriggerVoiceDemo = () => {
+  // ---------------------------------------------------------------------------
+  // Microphone state callbacks (Phase 7B — real push-to-talk)
+  // ---------------------------------------------------------------------------
+
+  /** Set the AI Core to LISTENING when the user holds the mic button and stop any playing audio. */
+  const handleRecordingStart = useCallback(() => {
+    stopAudio();
     setCoreState('listening');
-    setTimeout(() => {
-      setCoreState('idle');
-    }, 3500);
-  };
+  }, [stopAudio]);
+
+  /** Set the AI Core to TRANSCRIBING during Whisper speech-to-text processing. */
+  const handleTranscribing = useCallback(() => {
+    setCoreState('transcribing');
+  }, []);
+
+  /**
+   * Return the AI Core to IDLE when recording or transcription ends without a prompt
+   * (e.g. error, cancellation, or empty capture).
+   * On successful transcription, handleSendMessage sets 'thinking' prior to this callback,
+   * so only 'listening' or 'transcribing' are reset to avoid clobbering active LLM thinking.
+   */
+  const handleRecordingEnd = useCallback(() => {
+    setCoreState((current) =>
+      current === 'listening' || current === 'transcribing' ? 'idle' : current
+    );
+  }, []);
 
   // Format current local time for message timestamps
   const getCurrentTimeString = () => {
@@ -303,8 +323,9 @@ function App() {
     if (!text.trim() || isThinking) return;
 
     // Stop any currently playing speech before processing a new message.
+    // stopAudio() resets speaking→idle internally; we then immediately
+    // advance to 'thinking' so any intermediate state is invisible.
     stopAudio();
-    setCoreState((current) => (current === 'speaking' ? 'idle' : current));
 
     const userMessage: ChatMessage = {
       id: `usr-${Date.now()}`,
@@ -359,11 +380,7 @@ function App() {
       } else {
         setMessages((prev) => [...prev, assistantMessage]);
         setIsThinking(false);
-        // Text-only path: brief visual SPEAKING pulse, then idle.
-        setCoreState('speaking');
-        setTimeout(() => {
-          setCoreState((current) => (current === 'speaking' ? 'idle' : current));
-        }, 3200);
+        setCoreState('idle');
       }
     } catch (err: unknown) {
       setIsThinking(false);
@@ -458,7 +475,11 @@ function App() {
             <CommandComposer
               onSendMessage={handleSendMessage}
               disabled={isThinking}
-              onTriggerVoiceDemo={handleTriggerVoiceDemo}
+              onRecordingStart={handleRecordingStart}
+              onTranscribing={handleTranscribing}
+              onRecordingEnd={handleRecordingEnd}
+              backendEnabled={settings.useFastApiBackend}
+              backendUrl={settings.fastApiUrl}
             />
           </div>
         </section>

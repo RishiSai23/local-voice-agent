@@ -225,11 +225,80 @@ export async function requestSpeech(
         detail = errorData.detail;
       }
     } catch {
-      // Response was not JSON – keep generic detail string.
+      // Response was not JSON - keep generic detail string.
     }
     throw new Error(`[TTS ERROR ${response.status}] ${detail}`);
   }
 
   const blob = await response.blob();
   return URL.createObjectURL(blob);
+}
+
+/**
+ * Transcribe a WAV audio blob using the local Whisper.cpp backend endpoint.
+ *
+ * The blob MUST be a valid mono 16-bit 16 kHz PCM WAV file produced by the
+ * browser-side WAV encoder in CommandComposer.  The backend validates the
+ * format and rejects anything that does not meet those requirements.
+ *
+ * Throws a descriptive Error on network failure or HTTP error.
+ * Never falls back to Demo Mode -- transcription is always local and live.
+ *
+ * @param blob       WAV audio blob to upload.
+ * @param backendUrl Base URL of the FastAPI backend (default: http://localhost:8000).
+ * @returns          The raw transcript string from Whisper.
+ */
+export async function transcribeAudio(
+  blob: Blob,
+  backendUrl: string = 'http://localhost:8000'
+): Promise<string> {
+  // Build multipart form data.  Do NOT set Content-Type manually -- the browser
+  // must add the boundary parameter automatically.
+  const form = new FormData();
+  form.append('audio', blob, 'recording.wav');
+
+  let response: Response;
+  try {
+    response = await fetch(`${backendUrl}/transcribe`, {
+      method: 'POST',
+      body: form,
+    });
+  } catch {
+    throw new Error(
+      `[STT] Unable to reach the transcription endpoint at ${backendUrl}/transcribe. ` +
+      'Ensure the local FastAPI backend is running.'
+    );
+  }
+
+  // Extract a useful error message for any non-2xx status.
+  if (!response.ok) {
+    let detail = `HTTP ${response.status} (${response.statusText || 'Error'})`;
+    try {
+      const errorData = await response.json();
+      if (errorData && typeof errorData.detail === 'string') {
+        detail = errorData.detail;
+      } else if (errorData && Array.isArray(errorData.detail)) {
+        detail = (errorData.detail as Array<{ msg?: string }>)
+          .map((d) => d.msg || JSON.stringify(d))
+          .join(', ');
+      }
+    } catch {
+      // Response body was not JSON -- keep the generic status string.
+    }
+    throw new Error(`[STT ERROR ${response.status}] ${detail}`);
+  }
+
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch {
+    throw new Error('[STT] Malformed response from transcription endpoint: invalid JSON.');
+  }
+
+  const typed = data as { transcript?: unknown };
+  if (typeof typed.transcript !== 'string' || !typed.transcript.trim()) {
+    throw new Error('[STT] Malformed response from transcription endpoint: missing "transcript" field.');
+  }
+
+  return typed.transcript.trim();
 }

@@ -29,6 +29,11 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from voice_agent import PIPER, VOICE  # noqa: E402
 
+try:
+    from backend.sanitizer import clean_markdown
+except ImportError:
+    from sanitizer import clean_markdown
+
 # Absolute path to the .onnx model file sitting at the project root.
 # Piper accepts either a bare voice name (if models are installed globally)
 # or an explicit path to a .onnx file. We prefer the explicit path so the
@@ -45,7 +50,8 @@ class PiperSynthesisError(RuntimeError):
 
 
 def _sanitise_text(text: str) -> str:
-    """Mirror the text-cleaning logic in voice_agent.speak()."""
+    """Sanitise text for Piper TTS input, stripping Markdown and unsupported characters."""
+    text = clean_markdown(text)
     text = text.replace("\u2018", "'").replace("\u2019", "'")
     text = text.replace("\u201c", '"').replace("\u201d", '"')
     text = "".join(

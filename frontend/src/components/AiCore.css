@@ -1,3 +1,10 @@
+/* ===========================================================================
+   AiCore — per-state CSS animations
+   All visual state changes use CSS classes; no JS animation loops.
+   Transitions on ring groups ensure smooth cross-state morphing.
+   prefers-reduced-motion is handled globally in animations.css.
+=========================================================================== */
+
 .ai-core-container {
   position: relative;
   display: flex;
@@ -8,7 +15,9 @@
   user-select: none;
 }
 
-/* Ambient Backlight Bloom */
+/* ---------------------------------------------------------------------------
+   Ambient Backlight Bloom
+--------------------------------------------------------------------------- */
 .core-ambient-bloom {
   position: absolute;
   width: min(28vh, 230px);
@@ -18,7 +27,8 @@
   filter: blur(48px);
   z-index: 1;
   animation: ambientBloomBreathe 4.5s ease-in-out infinite alternate;
-  transition: background 0.7s ease, opacity 0.7s ease, filter 0.7s ease;
+  /* Smooth cross-state color & opacity shifts */
+  transition: background 0.65s ease, opacity 0.65s ease, filter 0.65s ease;
 }
 
 .core-ambient-bloom.state-idle {
@@ -27,21 +37,32 @@
 }
 
 .core-ambient-bloom.state-listening {
-  background: radial-gradient(circle, rgba(0, 240, 255, 0.8) 0%, rgba(56, 189, 248, 0.35) 50%, transparent 80%);
-  opacity: 0.75;
+  background: radial-gradient(circle, rgba(0, 240, 255, 0.85) 0%, rgba(56, 189, 248, 0.38) 50%, transparent 80%);
+  opacity: 0.78;
+  animation-duration: 1.6s;
+}
+
+.core-ambient-bloom.state-transcribing {
+  background: radial-gradient(circle, rgba(251, 191, 36, 0.7) 0%, rgba(245, 158, 11, 0.3) 50%, transparent 80%);
+  opacity: 0.68;
+  animation-duration: 1.0s;
 }
 
 .core-ambient-bloom.state-thinking {
   background: radial-gradient(circle, rgba(168, 85, 247, 0.75) 0%, rgba(0, 240, 255, 0.3) 50%, transparent 80%);
   opacity: 0.72;
+  animation-duration: 1.3s;
 }
 
 .core-ambient-bloom.state-speaking {
   background: radial-gradient(circle, rgba(56, 189, 248, 0.75) 0%, rgba(0, 240, 255, 0.25) 50%, transparent 75%);
   opacity: 0.65;
+  animation-duration: 1.8s;
 }
 
-/* Main SVG Core Graphic */
+/* ---------------------------------------------------------------------------
+   Main SVG graphic wrapper
+--------------------------------------------------------------------------- */
 .ai-core-svg {
   position: relative;
   z-index: 2;
@@ -59,11 +80,41 @@
   transform: scale(1.02);
 }
 
-/* Base Continuous Rotations (Persistent momentum, no reset on state change) */
+/* Per-state SVG drop-shadow intensity */
+.ai-core-svg.state-listening {
+  filter: drop-shadow(0 0 22px rgba(0, 240, 255, 0.45));
+}
+
+.ai-core-svg.state-transcribing {
+  filter: drop-shadow(0 0 20px rgba(251, 191, 36, 0.38));
+}
+
+.ai-core-svg.state-thinking {
+  filter: drop-shadow(0 0 26px rgba(168, 85, 247, 0.5));
+}
+
+.ai-core-svg.state-speaking {
+  filter: drop-shadow(0 0 24px rgba(56, 189, 248, 0.48));
+}
+
+/* ---------------------------------------------------------------------------
+   Ring base animations (persistent, no jump on state change)
+   Speed modifiers layer on top via state classes.
+--------------------------------------------------------------------------- */
 .ring-compass {
   transform-origin: 200px 200px;
   animation: spinClockwise 75s linear infinite;
   transition: opacity 0.5s ease, filter 0.5s ease;
+}
+
+/* Compass ring speeds up slightly when thinking */
+.state-thinking .ring-compass,
+.state-transcribing .ring-compass {
+  animation-duration: 22s;
+}
+
+.state-listening .ring-compass {
+  animation-duration: 50s;
 }
 
 .ring-arcs {
@@ -72,10 +123,36 @@
   transition: stroke 0.5s ease, filter 0.5s ease;
 }
 
+.state-thinking .ring-arcs {
+  animation-duration: 12s;
+}
+
+.state-transcribing .ring-arcs {
+  animation-duration: 16s;
+}
+
+.state-listening .ring-arcs,
+.state-speaking .ring-arcs {
+  animation-duration: 28s;
+}
+
 .ring-orbitals {
   transform-origin: 200px 200px;
   animation: spinClockwise 36s linear infinite;
   transition: opacity 0.5s ease, filter 0.5s ease;
+}
+
+.state-thinking .ring-orbitals {
+  animation-duration: 8s;
+}
+
+.state-transcribing .ring-orbitals {
+  animation-duration: 10s;
+}
+
+.state-listening .ring-orbitals,
+.state-speaking .ring-orbitals {
+  animation-duration: 20s;
 }
 
 .ring-iris {
@@ -84,7 +161,17 @@
   transition: opacity 0.5s ease, stroke 0.5s ease;
 }
 
-/* Quantum Energy Flux Ring (Thinking State Layer) */
+.state-thinking .ring-iris {
+  animation-duration: 14s;
+}
+
+.state-transcribing .ring-iris {
+  animation-duration: 18s;
+}
+
+/* ---------------------------------------------------------------------------
+   Quantum Energy Flux Ring (Thinking State Overlay)
+--------------------------------------------------------------------------- */
 .ring-thinking-flux {
   transform-origin: 200px 200px;
   animation: spinCounterClockwise 6.5s linear infinite;
@@ -99,7 +186,46 @@
   transform: scale(1);
 }
 
-/* Acoustic Expansion Wave Rings (Listening & Speaking States) */
+/* ---------------------------------------------------------------------------
+   Transcribing Data-Parse Ring
+--------------------------------------------------------------------------- */
+.ring-transcribing-parse {
+  transform-origin: 200px 200px;
+  animation: spinClockwise 4s linear infinite;
+  opacity: 0;
+  transform: scale(0.90);
+  pointer-events: none;
+  transition: opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1), transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.state-transcribing .ring-transcribing-parse {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* ---------------------------------------------------------------------------
+   Data-Stream Orbit Dots (Transcribing state only)
+--------------------------------------------------------------------------- */
+.core-data-stream {
+  transform-origin: 200px 200px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+  /* Rotate the whole group as a ring orbit */
+  animation: spinClockwise 3s linear infinite;
+}
+
+.state-transcribing .core-data-stream {
+  opacity: 1;
+}
+
+.data-stream-dot {
+  animation: dataStreamPulse 0.9s ease-in-out infinite alternate;
+}
+
+/* ---------------------------------------------------------------------------
+   Acoustic Expansion Wave Rings (Listening & Speaking states)
+--------------------------------------------------------------------------- */
 .core-acoustic-waves {
   opacity: 0;
   pointer-events: none;
@@ -126,7 +252,14 @@
   transform-origin: 200px 200px;
 }
 
-/* Radial Spectrum Spokes */
+/* Speaking ripples are more energetic */
+.state-speaking .ripple-wave-1 { animation-duration: 1.5s; }
+.state-speaking .ripple-wave-2 { animation-duration: 1.5s; }
+.state-speaking .ripple-wave-3 { animation-duration: 1.5s; }
+
+/* ---------------------------------------------------------------------------
+   Radial Spectrum Spokes
+--------------------------------------------------------------------------- */
 .frequency-spoke {
   transform-origin: 200px 200px;
   transition: stroke 0.5s ease, filter 0.5s ease, opacity 0.5s ease, stroke-width 0.3s ease;
@@ -136,6 +269,13 @@
   stroke: var(--color-primary);
   stroke-width: 2.8px;
   filter: drop-shadow(0 0 6px var(--color-primary));
+}
+
+.state-transcribing .frequency-spoke {
+  stroke: #fbbf24;
+  stroke-width: 2.2px;
+  filter: drop-shadow(0 0 5px #f59e0b);
+  animation: spokeTranscribing 1.1s ease-in-out infinite alternate;
 }
 
 .state-thinking .frequency-spoke {
@@ -149,7 +289,9 @@
   stroke: var(--color-primary-bright);
 }
 
-/* Central Nucleus Pulse by State */
+/* ---------------------------------------------------------------------------
+   Central Nucleus — per-state pulse animation
+--------------------------------------------------------------------------- */
 .core-nucleus {
   transform-origin: 200px 200px;
   transition: filter 0.5s ease, transform 0.5s ease;
@@ -162,6 +304,11 @@
 .state-listening .core-nucleus {
   animation: corePulseListening 1.5s ease-in-out infinite;
   filter: drop-shadow(0 0 16px var(--color-primary));
+}
+
+.state-transcribing .core-nucleus {
+  animation: coreFluxTranscribing 0.85s ease-in-out infinite;
+  filter: drop-shadow(0 0 14px #fbbf24);
 }
 
 .state-thinking .core-nucleus {

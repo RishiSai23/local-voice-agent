@@ -20,10 +20,48 @@ CHUNK_DURATION = 0.1
 CHUNK_SIZE = int(SAMPLE_RATE * CHUNK_DURATION)
 
 DEVICE = 1
-WHISPER = r"D:\Projects\local-voice-agent\whisper.cpp\build\bin\Release\whisper-cli.exe"
-WHISPER_MODEL = r"D:\Projects\local-voice-agent\whisper.cpp\ggml-tiny.en.bin"
+
+WHISPER_DIR = Path(r"D:\Projects\local-voice-agent\whisper.cpp")
+WHISPER = os.environ.get(
+    "WHISPER_BIN",
+    str(WHISPER_DIR / "build" / "bin" / "Release" / "whisper-cli.exe"),
+)
+
+WHISPER_BASE_MODEL = str(WHISPER_DIR / "ggml-base.bin")
+WHISPER_TINY_MODEL = str(WHISPER_DIR / "ggml-tiny.en.bin")
+
+
+def get_whisper_model() -> str:
+    """Return the best available Whisper model path.
+
+    Prefers ggml-base.bin for improved recognition accuracy, safely falling
+    back to ggml-tiny.en.bin if the base model is missing.
+    Can be overridden via WHISPER_MODEL environment variable.
+    """
+    env_model = os.environ.get("WHISPER_MODEL")
+    if env_model and Path(env_model).is_file():
+        return env_model
+    if Path(WHISPER_BASE_MODEL).is_file():
+        return WHISPER_BASE_MODEL
+    if Path(WHISPER_TINY_MODEL).is_file():
+        return WHISPER_TINY_MODEL
+    return WHISPER_BASE_MODEL
+
+
+WHISPER_MODEL = get_whisper_model()
+WHISPER_LANGUAGE = "en"
+
 PIPER = r"C:\Users\rishi\AppData\Local\Programs\Python\Python310\Scripts\piper.exe"
 VOICE = "en_US-lessac-medium"
+
+try:
+    from backend.sanitizer import clean_markdown
+except ImportError:
+    try:
+        from sanitizer import clean_markdown
+    except ImportError:
+        def clean_markdown(text: str) -> str:  # type: ignore[misc]
+            return text
 
 AUDIO_FILE = "input.wav"
 OUTPUT_FILE = "response.wav"
@@ -114,12 +152,14 @@ def record_until_silence():
     return True
 
 def transcribe():
+    model_to_use = get_whisper_model()
     try:
         result = subprocess.run(
             [
                 WHISPER,
-                "-m", WHISPER_MODEL,
+                "-m", model_to_use,
                 "-f", AUDIO_FILE,
+                "-l", WHISPER_LANGUAGE,
                 "-nt",
             ],
             capture_output=True,
@@ -516,6 +556,7 @@ def handle_tool_command(user_text):
 def speak(text):
     print("🔊 Speaking...")
 
+    text = clean_markdown(text)
     text = text.replace("’", "'").replace("‘", "'")
     text = text.replace("“", '"').replace("”", '"')
     text = "".join(
@@ -616,6 +657,7 @@ def main():
                     print("🤖 Qwen is thinking...")
                     try:
                         reply = ask_qwen(user_text, history, get_memories())
+                        reply = clean_markdown(reply)
                     except requests.RequestException as error:
                         print(f"❌ Ollama connection error: {error}")
                         print("Check that Ollama is running.")

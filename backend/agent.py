@@ -35,6 +35,11 @@ from voice_agent import (
     handle_tool_command,
 )
 
+try:
+    from backend.sanitizer import clean_markdown
+except ImportError:
+    from sanitizer import clean_markdown
+
 
 class OllamaConnectionError(Exception):
     """Raised when Ollama is offline or unreachable."""
@@ -149,11 +154,12 @@ class AssistantEngine:
                     f"Network error communicating with local AI engine: {err}"
                 ) from err
 
+            clean_reply = clean_markdown(reply)
             self.history.append({"role": "user", "content": user_text})
-            self.history.append({"role": "assistant", "content": reply})
+            self.history.append({"role": "assistant", "content": clean_reply})
             self._trim_history()
             return {
-                "reply": reply,
+                "reply": clean_reply,
                 "toolCall": None,
             }
 
