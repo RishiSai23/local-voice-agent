@@ -1,4 +1,5 @@
-export type CoreState = 'idle' | 'listening' | 'thinking' | 'speaking';
+export type CoreState = 'idle' | 'listening' | 'transcribing' | 'thinking' | 'speaking';
+
 
 export type AccentColor = 'cyan' | 'arc-blue' | 'violet' | 'amber';
 
