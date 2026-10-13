@@ -69,6 +69,27 @@ OUTPUT_FILE = "response.wav"
 OLLAMA_URL = "http://localhost:11434/api/chat"
 OLLAMA_MODEL = "qwen3:8b"
 
+# ---------------------------------------------------------------------------
+# Ollama generation options — tuned for low-latency conversational replies.
+# All three can be overridden at runtime via environment variables so you
+# never need to touch source code for one-off adjustments.
+# ---------------------------------------------------------------------------
+
+# Disable Qwen3 extended thinking for ordinary chat.  Set OLLAMA_THINK=true
+# in the environment to re-enable thinking (e.g. for reasoning-heavy tasks).
+OLLAMA_THINK: bool = os.environ.get("OLLAMA_THINK", "false").lower() == "true"
+
+# Maximum tokens Ollama may generate per response.  128 is enough for the
+# one-to-three short sentences the system prompt requests.  Pass a higher
+# value (e.g. OLLAMA_NUM_PREDICT=512) or override per-call via the
+# num_predict kwarg when a detailed explanation is explicitly requested.
+OLLAMA_NUM_PREDICT: int = int(os.environ.get("OLLAMA_NUM_PREDICT", "128"))
+
+# KV-cache context window.  4096 comfortably covers 20 history turns +
+# system prompt + memory facts while keeping VRAM usage predictable.
+# Raise via OLLAMA_NUM_CTX if very long conversations are needed.
+OLLAMA_NUM_CTX: int = int(os.environ.get("OLLAMA_NUM_CTX", "4096"))
+
 SPEECH_THRESHOLD = 150
 SILENCE_DURATION = 1.0
 MAX_RECORDING_TIME = 15
@@ -184,7 +205,34 @@ def transcribe():
     return text
 
 
-def ask_qwen(message, history, memories):
+def ask_qwen(message, history, memories, *, num_predict=None, think=None):
+    """Send a chat request to the local Ollama instance and return the reply.
+
+    Parameters
+    ----------
+    message:
+        The current user message to append to the conversation.
+    history:
+        The accumulated conversation history (list of role/content dicts).
+    memories:
+        SQLite key-value facts injected into the system prompt.
+    num_predict:
+        Per-call token limit override.  When ``None`` (default) the module-
+        level ``OLLAMA_NUM_PREDICT`` constant is used.  Pass a higher value
+        (e.g. ``512`` or ``1024``) when the caller has detected that the user
+        explicitly requested a detailed or long-form explanation so that the
+        response is not silently truncated.
+    think:
+        Per-call Qwen3 thinking-mode override.  When ``None`` (default) the
+        module-level ``OLLAMA_THINK`` constant is used (``False`` by default
+        for low latency).  Pass ``True`` to enable the extended reasoning
+        chain for a single request without changing the global setting.
+    """
+    if num_predict is None:
+        num_predict = OLLAMA_NUM_PREDICT
+    if think is None:
+        think = OLLAMA_THINK
+
     memory_context = (
         "\n\nFacts saved in your persistent memory:\n"
         + "\n".join(f"- {key}: {value}" for key, value in memories.items())
@@ -214,14 +262,27 @@ def ask_qwen(message, history, memories):
             "messages": messages,
             "stream": False,
             "keep_alive": "10m",
+            # Disable Qwen3 extended thinking at the API level.  This is the
+            # supported Ollama request parameter — not a post-hoc text filter.
+            "think": think,
+            "options": {
+                # Hard cap on generated tokens.  Keeps conversational replies
+                # short and predictable; callers may pass a higher num_predict
+                # for explicitly long-form requests.
+                "num_predict": num_predict,
+                # Context-window size.  4096 tokens covers 20 history turns +
+                # system prompt + memory without over-allocating VRAM.
+                "num_ctx": OLLAMA_NUM_CTX,
+            },
         },
         timeout=120,
     )
     response.raise_for_status()
     raw = response.json()["message"]["content"].strip()
 
-    # Qwen3 models emit <think>…</think> reasoning blocks before the visible
-    # reply.  Strip them so the user never sees raw internal monologue.
+    # Safety-net strip: kept in case an older Ollama build or a quantised
+    # variant ignores the think=False flag.  When think=False works correctly
+    # this regex finds nothing and returns raw unchanged.
     stripped = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
 
     # Guard: if stripping removes everything (model produced only a think
