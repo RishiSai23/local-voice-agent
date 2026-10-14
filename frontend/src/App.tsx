@@ -177,21 +177,22 @@ function App() {
   };
 
   /**
-   * Play a spoken reply from the local Piper TTS backend.
+   * Play a spoken reply from the local Piper TTS backend asynchronously.
    *
    * - Only called when useFastApiBackend AND enableTts are both enabled.
+   * - Runs in the background without blocking assistant text presentation.
    * - Claims a monotonic playback token; audio callbacks only mutate UI state
    *   while that token is still current, so a stale callback can never
    *   overwrite a newer THINKING/LISTENING state set by a later message.
    * - Sets coreState to 'speaking' only when audio actually starts playing
-   *   (via onplay), which also correctly advances the flow from 'thinking'.
+   *   (via onplay), so the core remains in 'idle' while synthesis is in flight.
    * - Returns coreState to 'idle' on natural end, error, or stop.
    * - On browser autoplay restriction, keeps the audio resource alive and
    *   surfaces a manual "Play" control instead of destroying it.
-   * - Errors here are non-fatal: text chat is always preserved.
+   * - Errors here are non-fatal: text chat is already preserved in the feed.
    */
   const playSpeechReply = useCallback(
-    async (text: string, onReady?: () => void) => {
+    async (text: string) => {
       // Stop any previous playback before starting a new one. This also
       // invalidates the previous token so its callbacks become no-ops.
       stopAudio();
@@ -206,7 +207,6 @@ function App() {
       } catch (err: unknown) {
         // A newer interaction may have started while awaiting synthesis.
         if (isCurrent()) {
-          onReady?.();
           const msg = err instanceof Error ? err.message : 'TTS request failed.';
           setMessages((prev) => [
             ...prev,
@@ -218,8 +218,8 @@ function App() {
               status: 'error',
             },
           ]);
-          // Leave the transient THINKING state so the core doesn't hang.
-          setCoreState((current) => (current === 'thinking' ? 'idle' : current));
+          // Leave any active speaking/thinking state so the core doesn't hang.
+          setCoreState((current) => (current === 'speaking' || current === 'thinking' ? 'idle' : current));
         }
         return;
       }
@@ -234,9 +234,6 @@ function App() {
       audioBlobUrlRef.current = blobUrl;
       const audio = new Audio(blobUrl);
       audioRef.current = audio;
-
-      // Reveal text simultaneously as audio is ready and handed to playback
-      onReady?.();
 
       audio.onplay = () => {
         if (!isCurrent()) return;
@@ -284,7 +281,7 @@ function App() {
         // Autoplay blocked by the browser (policy restriction). Keep the
         // audio resource alive and surface a manual control rather than
         // destroying it. Text chat remains fully usable regardless.
-        setCoreState((current) => (current === 'thinking' ? 'idle' : current));
+        setCoreState((current) => (current === 'speaking' || current === 'thinking' ? 'idle' : current));
         setAutoplayBlocked(true);
         setMessages((prev) => [
           ...prev,
@@ -357,30 +354,21 @@ function App() {
         status: 'complete',
       };
 
+      // 1. Immediately reveal the assistant's response in the conversation feed
+      setMessages((prev) => [...prev, assistantMessage]);
+      // 2. Stop showing the thinking indicator
+      setIsThinking(false);
+      // 3. Reset the core state to idle while audio is synthesized asynchronously
+      setCoreState('idle');
+
       // --- TTS playback path ---
       // Only speak when BOTH the live backend AND TTS are enabled.
       // Never speak demo responses or initial messages.
       if (settings.useFastApiBackend && settings.enableTts) {
-        let revealed = false;
-        const revealMessage = () => {
-          if (!revealed) {
-            revealed = true;
-            setMessages((prev) => [...prev, assistantMessage]);
-            setIsThinking(false);
-          }
-        };
-
-        try {
-          // Synchronized delivery: wait for Piper synthesis so the visible message
-          // and audible speech start as a single unified interaction.
-          await playSpeechReply(response.reply, revealMessage);
-        } finally {
-          revealMessage();
-        }
-      } else {
-        setMessages((prev) => [...prev, assistantMessage]);
-        setIsThinking(false);
-        setCoreState('idle');
+        // Start speech synthesis and playback asynchronously without blocking text display.
+        playSpeechReply(response.reply).catch((err: unknown) => {
+          console.error('Asynchronous TTS playback error:', err);
+        });
       }
     } catch (err: unknown) {
       setIsThinking(false);
