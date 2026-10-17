@@ -21,6 +21,7 @@ Key architecture points:
 """
 
 import argparse
+import inspect
 import io
 import json
 import os
@@ -29,6 +30,10 @@ import threading
 import time
 import wave
 from http.server import BaseHTTPRequestHandler, HTTPServer
+try:
+    from http.server import ThreadingHTTPServer
+except ImportError:
+    ThreadingHTTPServer = HTTPServer
 from pathlib import Path
 from typing import Any, Optional
 
@@ -53,10 +58,13 @@ _silence_applied: bool = False
 _auth_token: str = ""
 _model_path_str: str = ""
 _synthesis_lock = threading.Lock()
-_server_instance: Optional[HTTPServer] = None
+_server_instance: Optional[Any] = None
 
 _MAX_BODY_BYTES: int = 32 * 1024   # 32 KB — generous upper bound for TTS input
 _MAX_TEXT_CHARS: int = 2000         # Maximum characters per synthesis request
+
+
+WORKER_VERSION: str = "2.0"
 
 
 def _create_synthesis_config(sentence_silence: float = 0.35) -> tuple[Optional[Any], bool]:
@@ -86,10 +94,192 @@ def _create_synthesis_config(sentence_silence: float = 0.35) -> tuple[Optional[A
     return None, False
 
 
+def _get_voice_audio_params(voice: Any) -> tuple[int, int, int]:
+    """Return (channels, sample_width, sample_rate) appropriate for the loaded Piper voice model.
+
+    Piper models natively produce mono (1 channel), 16-bit linear PCM (sample width = 2 bytes)
+    at the sample rate configured in voice.config.sample_rate (typically 22050 Hz).
+    """
+    cfg = getattr(voice, "config", None)
+    sample_rate = 22050
+    if cfg is not None:
+        sr = getattr(cfg, "sample_rate", None)
+        if isinstance(sr, int) and sr > 0:
+            sample_rate = sr
+    return 1, 2, sample_rate
+
+
+def _create_wav_writer(
+    buf: io.BytesIO,
+    sample_rate: int,
+    channels: int = 1,
+    sample_width: int = 2,
+) -> wave.Wave_write:
+    """Create and return a wave.Wave_write instance with all required WAV headers initialized."""
+    wav = wave.open(buf, "wb")
+    wav.setnchannels(channels)
+    wav.setsampwidth(sample_width)
+    wav.setframerate(sample_rate)
+    return wav
+
+
+def _populate_existing_wav_writer(wav: wave.Wave_write, wav_bytes: bytes) -> None:
+    """Helper to populate an externally-supplied wave.Wave_write instance with frames from raw WAV bytes."""
+    with wave.open(io.BytesIO(wav_bytes), "rb") as r:
+        if not getattr(wav, "_nchannels", 0):
+            wav.setnchannels(r.getnchannels())
+        if not getattr(wav, "_sampwidth", 0):
+            wav.setsampwidth(r.getsampwidth())
+        if not getattr(wav, "_framerate", 0):
+            wav.setframerate(r.getframerate())
+        wav.writeframes(r.readframes(r.getnframes()))
+
+
+def _synthesize_voice(
+    voice: Any,
+    text: str,
+    wav: Optional[wave.Wave_write] = None,
+    silence: float = 0.35,
+) -> bytes:
+    """Synthesize text into WAV bytes across Piper Python library API versions.
+
+    Ensures that every synthesis attempt uses a freshly allocated io.BytesIO buffer and
+    properly initialized wave.Wave_write with channel count, sample width, and sample rate
+    derived from the loaded voice model.
+
+    If an optional existing `wav` writer is provided, the synthesized PCM frames are also
+    written into it for backwards compatibility with callers expecting a populated writer.
+    """
+    global _syn_config
+    channels, sample_width, sample_rate = _get_voice_audio_params(voice)
+    last_err: Optional[Exception] = None
+
+    # 1. Primary Installed API: voice.synthesize_wav(text, wav_file, syn_config=...)
+    # The installed piper-tts package provides `synthesize_wav` which explicitly takes a
+    # `wave.Wave_write` file object and writes audio frames into it.
+    if hasattr(voice, "synthesize_wav") and callable(getattr(voice, "synthesize_wav")):
+        if _syn_config is not None:
+            try:
+                buf = io.BytesIO()
+                with _create_wav_writer(buf, sample_rate, channels, sample_width) as w:
+                    voice.synthesize_wav(text, w, syn_config=_syn_config)
+                wav_bytes = buf.getvalue()
+                if len(wav_bytes) > 44 and wav_bytes.startswith(b"RIFF") and wav_bytes[8:12] == b"WAVE":
+                    if wav is not None:
+                        _populate_existing_wav_writer(wav, wav_bytes)
+                    return wav_bytes
+            except TypeError:
+                _syn_config = None
+            except Exception as exc:
+                last_err = exc
+
+        try:
+            buf = io.BytesIO()
+            with _create_wav_writer(buf, sample_rate, channels, sample_width) as w:
+                voice.synthesize_wav(text, w)
+            wav_bytes = buf.getvalue()
+            if len(wav_bytes) > 44 and wav_bytes.startswith(b"RIFF") and wav_bytes[8:12] == b"WAVE":
+                if wav is not None:
+                    _populate_existing_wav_writer(wav, wav_bytes)
+                return wav_bytes
+        except Exception as exc:
+            last_err = exc
+
+    # 2. Modern Generator API: voice.synthesize(text, ...) -> Iterable[AudioChunk]
+    # In upstream rhasspy/piper, `synthesize()` does NOT take a wav_file parameter; instead,
+    # it is a generator yielding AudioChunk instances (each containing `audio_int16_bytes`).
+    if hasattr(voice, "synthesize") and callable(getattr(voice, "synthesize")):
+        try:
+            chunks = None
+            if _syn_config is not None:
+                try:
+                    chunks = voice.synthesize(text, syn_config=_syn_config)
+                except TypeError:
+                    pass
+            if chunks is None:
+                chunks = voice.synthesize(text)
+
+            if hasattr(chunks, "__iter__"):
+                buf = io.BytesIO()
+                with _create_wav_writer(buf, sample_rate, channels, sample_width) as w:
+                    has_frames = False
+                    for chunk in chunks:
+                        if hasattr(chunk, "audio_int16_bytes") and chunk.audio_int16_bytes:
+                            w.writeframes(chunk.audio_int16_bytes)
+                            has_frames = True
+                        elif hasattr(chunk, "audio_float_array") and chunk.audio_float_array is not None:
+                            import numpy as np
+                            pcm = (np.clip(chunk.audio_float_array, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
+                            w.writeframes(pcm)
+                            has_frames = True
+                        elif isinstance(chunk, (bytes, bytearray)):
+                            w.writeframes(chunk)
+                            has_frames = True
+
+                wav_bytes = buf.getvalue()
+                if has_frames and len(wav_bytes) > 44 and wav_bytes.startswith(b"RIFF") and wav_bytes[8:12] == b"WAVE":
+                    if wav is not None:
+                        _populate_existing_wav_writer(wav, wav_bytes)
+                    return wav_bytes
+        except Exception as exc:
+            last_err = exc
+
+    # 3. Legacy Piper C/Python API: voice.synthesize(text, wav_file, ...)
+    # Older rhasspy/piper (<1.2) had a non-generator `synthesize(text, wav_file)` signature.
+    if hasattr(voice, "synthesize") and callable(getattr(voice, "synthesize")):
+        if not inspect.isgeneratorfunction(getattr(voice, "synthesize")):
+            try:
+                buf = io.BytesIO()
+                with _create_wav_writer(buf, sample_rate, channels, sample_width) as w:
+                    voice.synthesize(text, w, sentence_silence=silence)
+                wav_bytes = buf.getvalue()
+                if len(wav_bytes) > 44 and wav_bytes.startswith(b"RIFF") and wav_bytes[8:12] == b"WAVE":
+                    if wav is not None:
+                        _populate_existing_wav_writer(wav, wav_bytes)
+                    return wav_bytes
+            except TypeError:
+                pass
+            except Exception as exc:
+                last_err = exc
+
+            try:
+                buf = io.BytesIO()
+                with _create_wav_writer(buf, sample_rate, channels, sample_width) as w:
+                    voice.synthesize(text, w)
+                wav_bytes = buf.getvalue()
+                if len(wav_bytes) > 44 and wav_bytes.startswith(b"RIFF") and wav_bytes[8:12] == b"WAVE":
+                    if wav is not None:
+                        _populate_existing_wav_writer(wav, wav_bytes)
+                    return wav_bytes
+            except TypeError:
+                pass
+            except Exception as exc:
+                last_err = exc
+
+    # 4. Direct callable voice instance fallback: voice(text, wav_file)
+    if callable(voice):
+        try:
+            buf = io.BytesIO()
+            with _create_wav_writer(buf, sample_rate, channels, sample_width) as w:
+                voice(text, w)
+            wav_bytes = buf.getvalue()
+            if len(wav_bytes) > 44 and wav_bytes.startswith(b"RIFF") and wav_bytes[8:12] == b"WAVE":
+                if wav is not None:
+                    _populate_existing_wav_writer(wav, wav_bytes)
+                return wav_bytes
+        except Exception as exc:
+            last_err = exc
+
+    err_suffix = f": {type(last_err).__name__}: {last_err}" if last_err is not None else ""
+    raise AttributeError(
+        f"Piper voice object of type '{type(voice).__name__}' could not synthesize text across supported APIs{err_suffix}"
+    )
+
+
 class PiperWorkerHandler(BaseHTTPRequestHandler):
     """HTTP request handler for the localhost-only Piper worker."""
 
-    server_version = "PiperTTSWorker/1.0"
+    server_version = f"PiperTTSWorker/{WORKER_VERSION}"
 
     def log_message(self, format: str, *args: Any) -> None:
         """Suppress default Apache-style access logging to keep stdout clean for IPC."""
@@ -118,6 +308,7 @@ class PiperWorkerHandler(BaseHTTPRequestHandler):
             self.end_headers()
             payload = {
                 "status": "ready" if _voice is not None else "uninitialized",
+                "version": WORKER_VERSION,
                 "model": _model_path_str,
                 "loaded": _voice is not None,
                 "silence_applied": _silence_applied,
@@ -232,22 +423,7 @@ class PiperWorkerHandler(BaseHTTPRequestHandler):
             try:
                 t_synth_start = time.perf_counter()
                 with _synthesis_lock:
-                    buf = io.BytesIO()
-                    with wave.open(buf, "wb") as wav:
-                        if _syn_config is not None:
-                            try:
-                                _voice.synthesize_wav(text, wav, syn_config=_syn_config)
-                            except TypeError:
-                                print(
-                                    "[TTS Worker] synthesize_wav does not accept syn_config; "
-                                    "retrying without silence configuration.",
-                                    flush=True,
-                                )
-                                _voice.synthesize_wav(text, wav)
-                        else:
-                            _voice.synthesize_wav(text, wav)
-
-                    wav_bytes = buf.getvalue()
+                    wav_bytes = _synthesize_voice(_voice, text, silence=0.35)
                     synth_duration = time.perf_counter() - t_synth_start
 
                 # Strict audio validation
@@ -276,11 +452,18 @@ class PiperWorkerHandler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
-            except Exception:
+            except Exception as exc:
+                err_msg = f"{type(exc).__name__}: {exc}"
+                print(
+                    f"[TTS Worker Diagnostic] Synthesis exception: {err_msg} (chars={len(text)})",
+                    flush=True,
+                )
                 self.send_response(500)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(b'{"error": "Synthesis failed"}')
+                self.wfile.write(
+                    json.dumps({"error": f"Synthesis failed: {err_msg}"}).encode("utf-8")
+                )
             return
 
         self.send_response(404)
@@ -336,12 +519,13 @@ def run_worker() -> None:
 
     # 2. Start HTTP Server
     try:
+        ServerCls = ThreadingHTTPServer if ThreadingHTTPServer is not None else HTTPServer
         try:
-            _server_instance = HTTPServer((args.host, args.port), PiperWorkerHandler)
+            _server_instance = ServerCls((args.host, args.port), PiperWorkerHandler)
         except OSError as err:
             if args.port != 0:
                 sys.stderr.write(f"[TTS Worker] Port {args.port} unavailable ({err}), falling back to port 0\n")
-                _server_instance = HTTPServer((args.host, 0), PiperWorkerHandler)
+                _server_instance = ServerCls((args.host, 0), PiperWorkerHandler)
             else:
                 raise
 

@@ -40,6 +40,14 @@ try:
 except ImportError:
     from sanitizer import clean_markdown
 
+try:
+    from backend.task_service import handle_task_command
+except ImportError:
+    try:
+        from task_service import handle_task_command
+    except ImportError:
+        handle_task_command = None  # type: ignore[assignment]
+
 
 class OllamaConnectionError(Exception):
     """Raised when Ollama is offline or unreachable."""
@@ -85,7 +93,9 @@ class AssistantEngine:
         if len(self.history) > MAX_HISTORY_MESSAGES + 1:
             self.history = [self.history[0]] + self.history[-MAX_HISTORY_MESSAGES:]
 
-    def process_message(self, user_text: str) -> Dict[str, Any]:
+    def process_message(
+        self, user_text: str, *, return_diagnostics: bool = False
+    ) -> Dict[str, Any]:
         """Process a user message through existing tools, memory, or local Qwen via Ollama."""
         with self._lock:
             # 1. Exit/Status Command Handling (graceful standing-by response without breaking server)
@@ -94,6 +104,7 @@ class AssistantEngine:
                 return {
                     "reply": "Assistant session standing by. You can transmit another command anytime.",
                     "toolCall": None,
+                    "diagnostics": None,
                 }
 
             # 2. Deterministic local tools run before LLM
@@ -112,9 +123,24 @@ class AssistantEngine:
                 return {
                     "reply": tool_reply,
                     "toolCall": tool_call,
+                    "diagnostics": None,
                 }
 
-            # 3. Deterministic memory router (SQLite)
+            # 3. Deterministic Task & Reminder router (SQLite)
+            if handle_task_command is not None:
+                task_result = handle_task_command(user_text)
+                if task_result is not None:
+                    task_reply, task_tool_call = task_result
+                    self.history.append({"role": "user", "content": user_text})
+                    self.history.append({"role": "assistant", "content": task_reply})
+                    self._trim_history()
+                    return {
+                        "reply": task_reply,
+                        "toolCall": task_tool_call,
+                        "diagnostics": None,
+                    }
+
+            # 4. Deterministic memory router (SQLite)
             memory_reply = handle_memory_command(user_text)
             if memory_reply is not None:
                 lower_mem = memory_reply.lower()
@@ -130,12 +156,22 @@ class AssistantEngine:
                 return {
                     "reply": memory_reply,
                     "toolCall": tool_call,
+                    "diagnostics": None,
                 }
 
             # 4. LLM inference via existing ask_qwen
+            ollama_diag = None
             try:
                 memories = get_memories()
-                reply = ask_qwen(user_text, self.history, memories)
+                if return_diagnostics:
+                    reply, ollama_diag = ask_qwen(
+                        user_text,
+                        self.history,
+                        memories,
+                        return_diagnostics=True,
+                    )
+                else:
+                    reply = ask_qwen(user_text, self.history, memories)
             except requests.exceptions.ConnectionError as err:
                 raise OllamaConnectionError(
                     f"Local AI engine (Ollama) is offline or unreachable at {OLLAMA_URL}. "
@@ -161,6 +197,7 @@ class AssistantEngine:
             return {
                 "reply": clean_reply,
                 "toolCall": None,
+                "diagnostics": ollama_diag,
             }
 
     @staticmethod
@@ -285,8 +322,8 @@ class AssistantEngine:
 engine = AssistantEngine()
 
 
-def ask_agent(message: str) -> Dict[str, Any]:
-    return engine.process_message(message)
+def ask_agent(message: str, *, return_diagnostics: bool = False) -> Dict[str, Any]:
+    return engine.process_message(message, return_diagnostics=return_diagnostics)
 
 
 def get_health() -> Dict[str, Any]:

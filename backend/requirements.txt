@@ -1,0 +1,84 @@
+# ============================================================================
+# Local Voice Agent — Backend Python Dependencies
+# ============================================================================
+# Target environment: Windows, Python 3.10 (backend virtualenv).
+#
+# Derived from the actual third-party imports in the backend source tree:
+#   backend/main.py, backend/agent.py, backend/tts.py, backend/tts_worker.py
+#   and the project-root modules they import:
+#   voice_agent.py, memory.py, tools.py, backend/sanitizer.py
+#
+# The known-good versions currently installed in the venv are noted in inline
+# comments for reference. Compatible ranges (>= , <) are used instead of hard
+# pins to avoid unnecessary lock-in while preserving NumPy 2.x / SciPy
+# compatibility.
+#
+# Deliberately NOT listed here:
+#   * piper-tts  -> runs in a SEPARATE global Python environment; the backend
+#                   reaches it via the persistent localhost HTTP worker
+#                   (backend/tts_worker.py) or the piper CLI subprocess.
+#                   See backend/tts.py and backend/tts_worker.py.
+#   * whisper.cpp-> native whisper-cli.exe binary invoked via subprocess;
+#                   not a Python package.
+#
+# Install into the backend venv (run manually after this file is approved):
+#   python -m pip install -r backend/requirements.txt
+# ============================================================================
+
+
+# ----------------------------------------------------------------------------
+# Existing backend runtime dependencies
+# ----------------------------------------------------------------------------
+
+# Web framework, ASGI server, and request/response validation.
+fastapi>=0.110,<1.0            # installed: 0.142.4
+uvicorn>=0.27,<1.0             # installed: 0.54.0
+pydantic>=2.0,<3.0             # installed: 2.13.5 (v2 API: BaseModel/field_validator)
+
+# Required by FastAPI to parse multipart form uploads. POST /transcribe accepts
+# an UploadFile (backend/main.py); without this, file uploads fail at runtime.
+python-multipart>=0.0.9,<1.0   # installed: 0.0.32
+
+# HTTP client for the local Ollama instance (backend/agent.py, voice_agent.py).
+requests>=2.31,<3.0            # installed: 2.34.2
+
+# Microphone capture (sounddevice) and audio array / WAV I/O (numpy, scipy).
+# The project is on the NumPy 2.x / SciPy 1.13+ line; these floors are known to
+# be mutually compatible and are also what the wake-word stack below requires.
+sounddevice>=0.4.6,<1.0        # installed: 0.5.6
+numpy>=2.0,<3.0                # installed: 2.2.6
+scipy>=1.13,<2.0               # installed: 1.15.3
+
+
+# ----------------------------------------------------------------------------
+# Wake-word activation dependencies — openWakeWord 0.6.0 (Windows, Python 3.10)
+# ----------------------------------------------------------------------------
+# Local, offline "Hey Jarvis" detection using the verified ONNX model.
+# Reference: https://github.com/dscripka/openWakeWord
+#   Code license:      Apache-2.0
+#   Pretrained models: CC BY-NC-SA 4.0 (free for personal / non-commercial use)
+#
+# Microphone capture reuses sounddevice (already listed above), so openWakeWord's
+# optional Windows audio helper (PyAudioWPatch) is intentionally NOT installed.
+# On Windows only the ONNX runtime is used — tflite-runtime / ai-edge-litert are
+# Linux/Darwin-only in openWakeWord's dependency set and are omitted.
+
+# The wake-word framework itself. Pinned to the verified 0.6.x line.
+openwakeword>=0.6.0,<0.7
+
+# ONNX inference backend. NumPy 2.x support requires onnxruntime >= 1.17.0;
+# openWakeWord itself only constrains >=1.10,<2, so the floor is raised here to
+# stay compatible with the installed numpy 2.2.6.
+onnxruntime>=1.17.0,<2.0
+
+# openWakeWord dependency. NumPy 2.x support requires scikit-learn >= 1.4.2;
+# openWakeWord itself only constrains >=1,<2, so the floor is raised for
+# numpy 2.2.6 compatibility.
+scikit-learn>=1.4.2,<2.0
+
+# openWakeWord dependency (progress bars / utility). No NumPy-2 concerns.
+tqdm>=4.64.0,<5.0
+
+# scipy (>=1.13,<2.0) and requests (>=2.31,<3.0) are shared with the existing
+# backend deps above and already satisfy openWakeWord's own constraints
+# (scipy>=1.3,<2 and requests>=2.0,<3), so they are intentionally not repeated.

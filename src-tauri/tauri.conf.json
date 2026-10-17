@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "JARVIS Companion",
+  "version": "0.1.0",
+  "identifier": "com.localjarvis.companion",
+  "build": {
+    "beforeDevCommand": "",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "",
+    "frontendDist": "../frontend/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "companion",
+        "title": "J.A.R.V.I.S. Companion",
+        "url": "/",
+        "width": 420,
+        "height": 680,
+        "minWidth": 340,
+        "minHeight": 460,
+        "maxWidth": 800,
+        "maxHeight": 1000,
+        "resizable": true,
+        "alwaysOnTop": true,
+        "decorations": false,
+        "transparent": true,
+        "shadow": true,
+        "focus": true,
+        "skipTaskbar": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "globalShortcut": {
+      "shortcuts": [
+        {
+          "shortcut": "Alt+J",
+          "handler": "toggle_companion"
+        }
+      ]
+    }
+  }
+}

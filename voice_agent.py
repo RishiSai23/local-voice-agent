@@ -1,10 +1,26 @@
+import json
 import os
 import queue
 import re
 import subprocess
+import sys
+import tempfile
 import time
 import unicodedata
 from pathlib import Path
+
+# Alias this module into sys.modules as backend.voice_agent so that imports of
+# 'backend.voice_agent' from any package path find this module seamlessly.
+sys.modules.setdefault("backend.voice_agent", sys.modules[__name__])
+
+try:
+    from backend.tts import synthesise_to_wav, get_last_tts_engine
+except ImportError:
+    try:
+        from tts import synthesise_to_wav, get_last_tts_engine
+    except ImportError:
+        synthesise_to_wav = None  # type: ignore[assignment]
+        get_last_tts_engine = None  # type: ignore[assignment]
 
 import numpy as np
 import requests
@@ -66,8 +82,14 @@ except ImportError:
 AUDIO_FILE = "input.wav"
 OUTPUT_FILE = "response.wav"
 
-OLLAMA_URL = "http://localhost:11434/api/chat"
-OLLAMA_MODEL = "qwen3:8b"
+OLLAMA_URL: str = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/chat")
+OLLAMA_MODEL: str = os.environ.get("OLLAMA_MODEL", "qwen3:8b")
+
+# Keep-alive duration for Ollama model in memory/VRAM (Stage 4C.1).
+# Default: "24h" (keeps Qwen3:8b resident across voice requests to prevent the ~10.5s cold reload penalty).
+# Configurable via the OLLAMA_KEEP_ALIVE environment variable.
+# Supported formats: Go duration string (e.g. "24h", "2h", "30m"), integer seconds, or "-1" (indefinite).
+OLLAMA_KEEP_ALIVE: str = os.environ.get("OLLAMA_KEEP_ALIVE", "24h")
 
 # ---------------------------------------------------------------------------
 # Ollama generation options — tuned for low-latency conversational replies.
@@ -205,7 +227,111 @@ def transcribe():
     return text
 
 
-def ask_qwen(message, history, memories, *, num_predict=None, think=None):
+class WhisperUnavailableError(RuntimeError):
+    """Raised when the Whisper binary or model file is not available."""
+
+
+class WhisperTranscriptionError(RuntimeError):
+    """Raised when the Whisper subprocess fails, exits non-zero, or times out."""
+
+
+def transcribe_wav_bytes(audio_bytes: bytes) -> str:
+    """
+    Transcribe 16-bit / 16 kHz / mono PCM WAV bytes with the local Whisper.cpp
+    executable and return the cleaned transcript.
+
+    This is the single shared Whisper invocation used by both the
+    ``POST /transcribe`` route and the hands-free voice loop, so there is only
+    one transcription implementation. The caller is responsible for WAV header
+    validation; this function assumes *audio_bytes* is a valid mono 16-bit
+    16 kHz PCM WAV (the format produced by both the browser encoder and the
+    voice-loop recorder).
+
+    Returns
+    -------
+    str
+        The transcript text, or an empty string when Whisper detects no speech
+        (empty output or a blank-audio / silence sentinel).
+
+    Raises
+    ------
+    WhisperUnavailableError
+        If the whisper-cli binary or the selected model file is missing.
+    WhisperTranscriptionError
+        If the subprocess fails, exits non-zero, or exceeds the timeout.
+    """
+    if not Path(WHISPER).is_file():
+        raise WhisperUnavailableError(
+            "Whisper speech-to-text engine is not available. "
+            "Check that whisper-cli.exe is built."
+        )
+
+    model_to_use = get_whisper_model() if callable(get_whisper_model) else WHISPER_MODEL
+    if not Path(model_to_use).is_file():
+        raise WhisperUnavailableError(
+            "Whisper model file is not available. Check the configured model path."
+        )
+
+    # Write to a unique temp file; close before the subprocess opens it
+    # (required on Windows).
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp_path = Path(tmp.name)
+    try:
+        tmp.write(audio_bytes)
+        tmp.close()
+
+        cmd = [
+            WHISPER,
+            "-m", model_to_use,
+            "-f", str(tmp_path),
+            "-l", WHISPER_LANGUAGE,
+            "-nt",  # no timestamps in output
+        ]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise WhisperTranscriptionError(
+                "Speech recognition timed out. Try a shorter recording."
+            ) from exc
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise WhisperTranscriptionError(
+                "Speech recognition engine encountered an error while processing audio."
+            ) from exc
+
+        if result.returncode != 0:
+            raise WhisperTranscriptionError(
+                "Speech recognition failed. Ensure the model file is compatible "
+                "with this build of whisper-cli."
+            )
+
+        transcript = result.stdout.strip()
+        if not transcript or transcript.upper() in {"[BLANK_AUDIO]", "[SILENCE]", "(blank)"}:
+            return ""
+        return transcript
+    finally:
+        # Always remove the temp file, even if an exception was raised above.
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def ask_qwen(
+    message,
+    history,
+    memories,
+    *,
+    num_predict=None,
+    think=None,
+    return_diagnostics: bool = False,
+):
     """Send a chat request to the local Ollama instance and return the reply.
 
     Parameters
@@ -217,16 +343,14 @@ def ask_qwen(message, history, memories, *, num_predict=None, think=None):
     memories:
         SQLite key-value facts injected into the system prompt.
     num_predict:
-        Per-call token limit override.  When ``None`` (default) the module-
-        level ``OLLAMA_NUM_PREDICT`` constant is used.  Pass a higher value
-        (e.g. ``512`` or ``1024``) when the caller has detected that the user
-        explicitly requested a detailed or long-form explanation so that the
-        response is not silently truncated.
+        Per-call token limit override. When ``None`` (default) the module-
+        level ``OLLAMA_NUM_PREDICT`` constant is used.
     think:
-        Per-call Qwen3 thinking-mode override.  When ``None`` (default) the
-        module-level ``OLLAMA_THINK`` constant is used (``False`` by default
-        for low latency).  Pass ``True`` to enable the extended reasoning
-        chain for a single request without changing the global setting.
+        Per-call Qwen3 thinking-mode override. When ``None`` (default) the
+        module-level ``OLLAMA_THINK`` constant is used.
+    return_diagnostics:
+        When ``True``, returns a tuple of ``(reply_text, diagnostics_dict)``
+        with precise monotonic latency measurements and Ollama timing metadata.
     """
     if num_predict is None:
         num_predict = OLLAMA_NUM_PREDICT
@@ -255,40 +379,105 @@ def ask_qwen(message, history, memories, *, num_predict=None, think=None):
     }
     messages.append({"role": "user", "content": message})
 
-    response = requests.post(
-        OLLAMA_URL,
-        json={
-            "model": OLLAMA_MODEL,
-            "messages": messages,
-            "stream": False,
-            "keep_alive": "10m",
-            # Disable Qwen3 extended thinking at the API level.  This is the
-            # supported Ollama request parameter — not a post-hoc text filter.
-            "think": think,
-            "options": {
-                # Hard cap on generated tokens.  Keeps conversational replies
-                # short and predictable; callers may pass a higher num_predict
-                # for explicitly long-form requests.
-                "num_predict": num_predict,
-                # Context-window size.  4096 tokens covers 20 history turns +
-                # system prompt + memory without over-allocating VRAM.
-                "num_ctx": OLLAMA_NUM_CTX,
+    t_ollama_start = time.perf_counter()
+    first_token_time = None
+    chunks = []
+    final_meta: dict = {}
+
+    try:
+        response = requests.post(
+            OLLAMA_URL,
+            json={
+                "model": OLLAMA_MODEL,
+                "messages": messages,
+                "stream": True,
+                "keep_alive": OLLAMA_KEEP_ALIVE,
+                "think": think,
+                "options": {
+                    "num_predict": num_predict,
+                    "num_ctx": OLLAMA_NUM_CTX,
+                },
             },
-        },
-        timeout=120,
-    )
-    response.raise_for_status()
-    raw = response.json()["message"]["content"].strip()
+            stream=True,
+            timeout=120,
+        )
+        response.raise_for_status()
+
+        for line in response.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            try:
+                chunk_data = json.loads(line)
+            except Exception:
+                continue
+
+            msg_chunk = chunk_data.get("message", {}).get("content", "")
+            if msg_chunk:
+                if first_token_time is None:
+                    first_token_time = time.perf_counter()
+                chunks.append(msg_chunk)
+
+            if chunk_data.get("done"):
+                final_meta = chunk_data
+
+        raw = "".join(chunks).strip()
+    except Exception:
+        # Fallback to non-streaming if stream mode fails
+        resp_fallback = requests.post(
+            OLLAMA_URL,
+            json={
+                "model": OLLAMA_MODEL,
+                "messages": messages,
+                "stream": False,
+                "keep_alive": OLLAMA_KEEP_ALIVE,
+                "think": think,
+                "options": {
+                    "num_predict": num_predict,
+                    "num_ctx": OLLAMA_NUM_CTX,
+                },
+            },
+            timeout=120,
+        )
+        resp_fallback.raise_for_status()
+        final_meta = resp_fallback.json()
+        raw = final_meta.get("message", {}).get("content", "").strip()
+        first_token_time = time.perf_counter()
+
+    t_ollama_end = time.perf_counter()
 
     # Safety-net strip: kept in case an older Ollama build or a quantised
-    # variant ignores the think=False flag.  When think=False works correctly
-    # this regex finds nothing and returns raw unchanged.
+    # variant ignores the think=False flag.
     stripped = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+    final_text = stripped if stripped else raw
 
-    # Guard: if stripping removes everything (model produced only a think
-    # block and nothing else), fall back to the raw text so the caller
-    # always receives a non-empty string.
-    return stripped if stripped else raw
+    if return_diagnostics:
+        load_duration_ns = final_meta.get("load_duration", 0)
+        prompt_eval_ns = final_meta.get("prompt_eval_duration", 0)
+        eval_ns = final_meta.get("eval_duration", 0)
+        total_meta_ns = final_meta.get("total_duration", 0)
+
+        diag = {
+            "start_time": t_ollama_start,
+            "end_time": t_ollama_end,
+            "first_token_time": first_token_time,
+            "total_duration_ms": (t_ollama_end - t_ollama_start) * 1000.0,
+            "time_to_first_token_ms": (
+                (first_token_time - t_ollama_start) * 1000.0
+                if first_token_time is not None
+                else None
+            ),
+            "load_duration_ms": load_duration_ns / 1_000_000.0,
+            "prompt_eval_duration_ms": prompt_eval_ns / 1_000_000.0,
+            "eval_duration_ms": eval_ns / 1_000_000.0,
+            "meta_total_duration_ms": total_meta_ns / 1_000_000.0,
+            "prompt_eval_count": final_meta.get("prompt_eval_count", 0),
+            "eval_count": final_meta.get("eval_count", 0),
+            "model": OLLAMA_MODEL,
+            "is_cold_start": (load_duration_ns / 1_000_000.0) > 1000.0,
+        }
+        return final_text, diag
+
+    return final_text
 
 
 def _canonical_memory_key(raw_key):
@@ -630,6 +819,21 @@ def speak(text):
         print("No speakable text.")
         return
 
+    # 1. Attempt persistent worker synthesis via backend.tts pipeline
+    if synthesise_to_wav is not None:
+        try:
+            wav_bytes = synthesise_to_wav(text)
+            if wav_bytes and len(wav_bytes) > 44:
+                with open(OUTPUT_FILE, "wb") as f:
+                    f.write(wav_bytes)
+                sample_rate, audio = read(OUTPUT_FILE)
+                sd.play(audio, sample_rate)
+                sd.wait()
+                return
+        except Exception as error:
+            print(f"[voice_agent] Persistent synthesis exception, falling back to CLI: {error}")
+
+    # 2. Fallback: Direct Piper CLI invocation
     try:
         result = subprocess.run(
             [
