@@ -48,6 +48,13 @@ except ImportError:
     except ImportError:
         handle_task_command = None  # type: ignore[assignment]
 
+try:
+    from backend.feedback_store import create_feedback
+except ImportError:
+    try:
+        from feedback_store import create_feedback
+    except ImportError:
+        create_feedback = None
 
 class OllamaConnectionError(Exception):
     """Raised when Ollama is offline or unreachable."""
@@ -63,6 +70,66 @@ class OllamaHTTPError(Exception):
     """Raised when Ollama returns an HTTP error status."""
     pass
 
+def handle_feedback_command(user_text: str):
+    match = re.match(
+        r"^\s*(?:record feedback|save this feedback|capture hackathon feedback)\s*:\s*",
+        user_text,
+        flags=re.IGNORECASE,
+    )
+
+    if not match:
+        return None
+
+    if create_feedback is None:
+        return (
+            "Feedback storage is unavailable. Please check the local feedback module.",
+            {
+                "name": "feedback.create_feedback",
+                "details": "Feedback module unavailable",
+                "status": "failed",
+            },
+        )
+
+    transcript = user_text[match.end():]
+
+    if not transcript.strip():
+        return (
+            "Please tell me the feedback you'd like me to save.",
+            {
+                "name": "feedback.create_feedback",
+                "details": "Feedback text missing",
+                "status": "failed",
+            },
+        )
+
+    try:
+        record = create_feedback(transcript=transcript)
+        return (
+            f"Feedback saved successfully. Reference ID: {record['id']}.",
+            {
+                "name": "feedback.create_feedback",
+                "details": record["id"],
+                "status": "success",
+            },
+        )
+    except (ValueError, TypeError):
+        return (
+            "I couldn't save that feedback because its text is invalid.",
+            {
+                "name": "feedback.create_feedback",
+                "details": "Invalid feedback input",
+                "status": "failed",
+            },
+        )
+    except Exception:
+        return (
+            "I couldn't save the feedback because of a local storage error.",
+            {
+                "name": "feedback.create_feedback",
+                "details": "Feedback storage failure",
+                "status": "failed",
+            },
+        )
 
 class AssistantEngine:
     """Thread-safe integration layer connecting FastAPI to existing local assistant logic."""
@@ -104,6 +171,24 @@ class AssistantEngine:
                 return {
                     "reply": "Assistant session standing by. You can transmit another command anytime.",
                     "toolCall": None,
+                    "diagnostics": None,
+                }
+
+                        # Deterministic feedback capture runs before other tools and the LLM.
+            feedback_result = handle_feedback_command(user_text)
+
+            if feedback_result is not None:
+                feedback_reply, feedback_tool_call = feedback_result
+
+                self.history.append({"role": "user", "content": user_text})
+                self.history.append(
+                    {"role": "assistant", "content": feedback_reply}
+                )
+                self._trim_history()
+
+                return {
+                    "reply": feedback_reply,
+                    "toolCall": feedback_tool_call,
                     "diagnostics": None,
                 }
 

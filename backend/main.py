@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import re
 
@@ -187,6 +187,32 @@ except ImportError:
 init_conversation_db()
 init_task_db()
 
+# Persistent feedback store (Stage 6.1)
+try:
+    from backend.feedback_store import (
+        init_feedback_db,
+        create_feedback,
+        list_feedback,
+        get_feedback,
+        update_feedback,
+        search_feedback,
+        delete_feedback,
+        get_feedback_store_health,
+    )
+except ImportError:
+    from feedback_store import (
+        init_feedback_db,
+        create_feedback,
+        list_feedback,
+        get_feedback,
+        update_feedback,
+        search_feedback,
+        delete_feedback,
+        get_feedback_store_health,
+    )
+
+init_feedback_db()
+
 app = FastAPI(
     title="Local Voice Agent API",
     description="JARVIS local assistant engine FastAPI backend",
@@ -234,8 +260,8 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
-    toolCall: Optional[Dict[str, Any]] = None
-    conversation_id: Optional[str] = None
+
+
 
 
 class CreateConversationRequest(BaseModel):
@@ -310,6 +336,56 @@ class TestNotificationRequest(BaseModel):
     test_speech: Optional[bool] = Field(False, description="Whether to also test spoken announcement")
 
 
+# ---------------------------------------------------------------------------
+# Feedback request / response models (Stage 6.1)
+# ---------------------------------------------------------------------------
+
+
+class CreateFeedbackRequest(BaseModel):
+    transcript: str = Field(..., description="Original user transcript to capture")
+    summary: Optional[str] = Field(None, max_length=5000, description="Optional cleaned-up summary; does not replace the transcript")
+    category: Optional[str] = Field(None, max_length=200, description="Optional feedback category")
+    event_name: Optional[str] = Field(None, max_length=200, description="Optional event or project name")
+    tags: Optional[List[str]] = Field(None, description="Optional user-provided tags")
+
+    @field_validator("transcript")
+    @classmethod
+    def validate_transcript_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("transcript cannot be empty or whitespace only.")
+        return v.strip()
+
+
+class UpdateFeedbackRequest(BaseModel):
+    """Pydantic model for PATCH /feedback/{feedback_id}.
+
+    All fields are optional.  Pydantic's ``model_fields_set`` is used by the
+    route handler to distinguish an omitted field (no change) from a field
+    explicitly set to ``None`` (clear that column).  Only the four mutable
+    metadata columns supported by ``update_feedback()`` are included;
+    ``transcript``, ``id``, and ``created_at`` are intentionally absent.
+    """
+
+    summary: Optional[str] = Field(
+        default=None,
+        max_length=5000,
+        description="Updated summary; set to null to clear.",
+    )
+    category: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description="Updated category label; set to null to clear.",
+    )
+    event_name: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description="Updated event or project name; set to null to clear.",
+    )
+    tags: Optional[List[str]] = Field(
+        default=None,
+        description="Updated tag list; set to null or [] to clear.",
+    )
+
 @app.get("/")
 def root():
     return {
@@ -333,13 +409,21 @@ def root():
             "upcoming_reminders": "/reminders/upcoming",
             "notification_settings": "/settings/notifications",
             "notification_test": "/notifications/test",
+            "feedback": "/feedback",
         },
     }
 
 
 @app.get("/health")
-def health():
-    return get_health()
+def health() -> Dict[str, Any]:
+    health_data = get_health()
+    # Add a small, local-only health/diagnostic indication for the feedback
+    # store, matching existing per-subsystem health conventions.
+    try:
+        health_data["feedback"] = get_feedback_store_health()
+    except Exception as err:  # noqa: BLE001
+        health_data["feedback"] = {"status": f"unhealthy: {err}"}
+    return health_data
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -1477,6 +1561,145 @@ def api_trigger_scheduler() -> Dict[str, Any]:
     scheduler = get_task_scheduler()
     claimed_count = scheduler.trigger_check()
     return {"status": "triggered", "claimed_count": claimed_count, "scheduler_running": scheduler.is_running}
+
+
+# ===========================================================================
+# Stage 6.1 — Feedback Capture API Endpoints
+# ===========================================================================
+
+
+@app.post("/feedback", status_code=status.HTTP_201_CREATED)
+def api_create_feedback(request: CreateFeedbackRequest) -> Dict[str, Any]:
+    """Create a new hackathon feedback record.
+
+    The original transcript is preserved; an optional summary does not
+    replace it.
+    """
+    # Defense-in-depth validation (Pydantic already validates, but we repeat
+    # the empty check to return a clear 400 rather than a 422).
+    if not request.transcript or not request.transcript.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="transcript cannot be empty or whitespace only.",
+        )
+
+    try:
+        record = create_feedback(
+            transcript=request.transcript,
+            summary=request.summary,
+            category=request.category,
+            event_name=request.event_name,
+            tags=request.tags,
+        )
+        return {"feedback": record}
+    except ValueError as err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(err),
+        ) from err
+
+
+@app.get("/feedback")
+def api_list_feedback(limit: int = 100) -> Dict[str, Any]:
+    """List feedback records newest first (by created_at descending)."""
+    if limit < 1 or limit > 500:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="limit must be between 1 and 500.",
+        )
+    records = list_feedback(limit=limit)
+    return {"feedback": records, "total": len(records)}
+
+
+@app.get("/feedback/search")
+def api_search_feedback(q: str, limit: int = 100) -> Dict[str, Any]:
+    """Search feedback across transcript, summary, category, event name, and tags."""
+    if limit < 1 or limit > 500:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="limit must be between 1 and 500.",
+        )
+    if not q or not q.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="query parameter 'q' cannot be empty.",
+        )
+    records = search_feedback(query=q.strip(), limit=limit)
+    return {"feedback": records, "total": len(records), "query": q.strip()}
+
+
+@app.get("/feedback/{feedback_id}")
+def api_get_feedback(feedback_id: str) -> Dict[str, Any]:
+    """Retrieve a single feedback record by ID."""
+    record = get_feedback(feedback_id)
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Feedback '{feedback_id}' not found.",
+        )
+    return {"feedback": record}
+
+
+@app.patch("/feedback/{feedback_id}")
+def api_update_feedback(
+    feedback_id: str,
+    request: UpdateFeedbackRequest,
+) -> Dict[str, Any]:
+    """Update mutable metadata fields of a feedback record.
+
+    Only fields explicitly present in the request body are changed.
+    Omitting a field leaves its stored value unchanged.  Setting a
+    nullable field to ``null`` clears it in the database.
+
+    Responses
+    ---------
+    200  Updated feedback record: ``{"feedback": {...}}``
+    400  Empty update body or store-level validation failure
+    404  No record with the given ``feedback_id``
+    422  Pydantic request validation failure (e.g. field too long)
+    """
+    # Build the updates dict from only the fields the client actually sent.
+    # model_fields_set contains the names present in the raw request body,
+    # so an omitted field is never forwarded (no accidental clear).
+    supplied: Dict[str, Any] = {
+        field: getattr(request, field)
+        for field in request.model_fields_set
+    }
+
+    if not supplied:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Request body must contain at least one updatable field "
+                   "(summary, category, event_name, tags).",
+        )
+
+    try:
+        updated = update_feedback(feedback_id, supplied)
+    except ValueError as err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(err),
+        ) from err
+
+    if updated is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Feedback '{feedback_id}' not found.",
+        )
+
+    return {"feedback": updated}
+
+
+@app.delete("/feedback/{feedback_id}")
+def api_delete_feedback(feedback_id: str) -> Dict[str, Any]:
+    """Delete a feedback record by ID."""
+    success = delete_feedback(feedback_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Feedback '{feedback_id}' not found.",
+        )
+    return {"status": "deleted", "feedback_id": feedback_id}
 
 
 if __name__ == "__main__":
