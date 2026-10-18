@@ -260,9 +260,8 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
-
-
-
+    toolCall: Optional[Dict[str, Any]] = None
+    conversation_id: Optional[str] = None
 
 class CreateConversationRequest(BaseModel):
     title: Optional[str] = Field(None, max_length=200, description="Optional conversation title")
