@@ -40,6 +40,21 @@ try:
 except ImportError:
     from sanitizer import clean_markdown
 
+try:
+    from backend.task_service import handle_task_command
+except ImportError:
+    try:
+        from task_service import handle_task_command
+    except ImportError:
+        handle_task_command = None  # type: ignore[assignment]
+
+try:
+    from backend.feedback_store import create_feedback
+except ImportError:
+    try:
+        from feedback_store import create_feedback
+    except ImportError:
+        create_feedback = None
 
 class OllamaConnectionError(Exception):
     """Raised when Ollama is offline or unreachable."""
@@ -55,6 +70,66 @@ class OllamaHTTPError(Exception):
     """Raised when Ollama returns an HTTP error status."""
     pass
 
+def handle_feedback_command(user_text: str):
+    match = re.match(
+        r"^\s*(?:record feedback|save this feedback|capture hackathon feedback)\s*:\s*",
+        user_text,
+        flags=re.IGNORECASE,
+    )
+
+    if not match:
+        return None
+
+    if create_feedback is None:
+        return (
+            "Feedback storage is unavailable. Please check the local feedback module.",
+            {
+                "name": "feedback.create_feedback",
+                "details": "Feedback module unavailable",
+                "status": "failed",
+            },
+        )
+
+    transcript = user_text[match.end():]
+
+    if not transcript.strip():
+        return (
+            "Please tell me the feedback you'd like me to save.",
+            {
+                "name": "feedback.create_feedback",
+                "details": "Feedback text missing",
+                "status": "failed",
+            },
+        )
+
+    try:
+        record = create_feedback(transcript=transcript)
+        return (
+            f"Feedback saved successfully. Reference ID: {record['id']}.",
+            {
+                "name": "feedback.create_feedback",
+                "details": record["id"],
+                "status": "success",
+            },
+        )
+    except (ValueError, TypeError):
+        return (
+            "I couldn't save that feedback because its text is invalid.",
+            {
+                "name": "feedback.create_feedback",
+                "details": "Invalid feedback input",
+                "status": "failed",
+            },
+        )
+    except Exception:
+        return (
+            "I couldn't save the feedback because of a local storage error.",
+            {
+                "name": "feedback.create_feedback",
+                "details": "Feedback storage failure",
+                "status": "failed",
+            },
+        )
 
 class AssistantEngine:
     """Thread-safe integration layer connecting FastAPI to existing local assistant logic."""
@@ -85,7 +160,9 @@ class AssistantEngine:
         if len(self.history) > MAX_HISTORY_MESSAGES + 1:
             self.history = [self.history[0]] + self.history[-MAX_HISTORY_MESSAGES:]
 
-    def process_message(self, user_text: str) -> Dict[str, Any]:
+    def process_message(
+        self, user_text: str, *, return_diagnostics: bool = False
+    ) -> Dict[str, Any]:
         """Process a user message through existing tools, memory, or local Qwen via Ollama."""
         with self._lock:
             # 1. Exit/Status Command Handling (graceful standing-by response without breaking server)
@@ -94,6 +171,25 @@ class AssistantEngine:
                 return {
                     "reply": "Assistant session standing by. You can transmit another command anytime.",
                     "toolCall": None,
+                    "diagnostics": None,
+                }
+
+                        # Deterministic feedback capture runs before other tools and the LLM.
+            feedback_result = handle_feedback_command(user_text)
+
+            if feedback_result is not None:
+                feedback_reply, feedback_tool_call = feedback_result
+
+                self.history.append({"role": "user", "content": user_text})
+                self.history.append(
+                    {"role": "assistant", "content": feedback_reply}
+                )
+                self._trim_history()
+
+                return {
+                    "reply": feedback_reply,
+                    "toolCall": feedback_tool_call,
+                    "diagnostics": None,
                 }
 
             # 2. Deterministic local tools run before LLM
@@ -112,9 +208,24 @@ class AssistantEngine:
                 return {
                     "reply": tool_reply,
                     "toolCall": tool_call,
+                    "diagnostics": None,
                 }
 
-            # 3. Deterministic memory router (SQLite)
+            # 3. Deterministic Task & Reminder router (SQLite)
+            if handle_task_command is not None:
+                task_result = handle_task_command(user_text)
+                if task_result is not None:
+                    task_reply, task_tool_call = task_result
+                    self.history.append({"role": "user", "content": user_text})
+                    self.history.append({"role": "assistant", "content": task_reply})
+                    self._trim_history()
+                    return {
+                        "reply": task_reply,
+                        "toolCall": task_tool_call,
+                        "diagnostics": None,
+                    }
+
+            # 4. Deterministic memory router (SQLite)
             memory_reply = handle_memory_command(user_text)
             if memory_reply is not None:
                 lower_mem = memory_reply.lower()
@@ -130,12 +241,22 @@ class AssistantEngine:
                 return {
                     "reply": memory_reply,
                     "toolCall": tool_call,
+                    "diagnostics": None,
                 }
 
             # 4. LLM inference via existing ask_qwen
+            ollama_diag = None
             try:
                 memories = get_memories()
-                reply = ask_qwen(user_text, self.history, memories)
+                if return_diagnostics:
+                    reply, ollama_diag = ask_qwen(
+                        user_text,
+                        self.history,
+                        memories,
+                        return_diagnostics=True,
+                    )
+                else:
+                    reply = ask_qwen(user_text, self.history, memories)
             except requests.exceptions.ConnectionError as err:
                 raise OllamaConnectionError(
                     f"Local AI engine (Ollama) is offline or unreachable at {OLLAMA_URL}. "
@@ -161,6 +282,7 @@ class AssistantEngine:
             return {
                 "reply": clean_reply,
                 "toolCall": None,
+                "diagnostics": ollama_diag,
             }
 
     @staticmethod
@@ -285,8 +407,8 @@ class AssistantEngine:
 engine = AssistantEngine()
 
 
-def ask_agent(message: str) -> Dict[str, Any]:
-    return engine.process_message(message)
+def ask_agent(message: str, *, return_diagnostics: bool = False) -> Dict[str, Any]:
+    return engine.process_message(message, return_diagnostics=return_diagnostics)
 
 
 def get_health() -> Dict[str, Any]:

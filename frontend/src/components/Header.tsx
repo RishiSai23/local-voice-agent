@@ -5,9 +5,17 @@ interface HeaderProps {
   modelName: string;
   onOpenSettings: () => void;
   status?: 'nominal' | 'optimizing' | 'offline';
+  onToggleCompanion?: () => void;
+  isCompanionOpen?: boolean;
 }
 
-export const Header: FC<HeaderProps> = ({ modelName, onOpenSettings, status = 'nominal' }) => {
+export const Header: FC<HeaderProps> = ({
+  modelName,
+  onOpenSettings,
+  status = 'nominal',
+  onToggleCompanion,
+  isCompanionOpen = false,
+}) => {
   const [timeString, setTimeString] = useState<string>('');
 
   useEffect(() => {
@@ -204,6 +212,30 @@ export const Header: FC<HeaderProps> = ({ modelName, onOpenSettings, status = 'n
           <span>{modelName}</span>
           <span style={{ color: 'var(--color-primary)', fontSize: '9px' }}>[OLLAMA]</span>
         </div>
+
+        {onToggleCompanion && (
+          <button
+            type="button"
+            onClick={onToggleCompanion}
+            className={`hud-glow-btn ${isCompanionOpen ? 'active' : ''}`}
+            aria-label="Toggle J.A.R.V.I.S. Floating Companion"
+            style={{
+              padding: '7px 12px',
+              borderRadius: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              backgroundColor: isCompanionOpen ? 'rgba(0, 240, 255, 0.2)' : undefined,
+              borderColor: isCompanionOpen ? 'var(--color-primary)' : undefined,
+            }}
+            title="Toggle Floating Companion (Alt+J)"
+          >
+            <ArcReactorIcon style={{ width: '15px', height: '15px', color: 'var(--color-primary)' }} />
+            <span style={{ fontFamily: 'var(--font-hud)', fontSize: '11px', letterSpacing: '0.08em' }}>
+              COMPANION
+            </span>
+          </button>
+        )}
 
         <button
           type="button"
