@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import type { FC } from 'react';
-import type { Task, TaskStatus, TaskRecurrence, CreateTaskInput, NotificationSettings } from '../types';
+import type { Task, TaskRecurrence, CreateTaskInput, NotificationSettings } from '../types';
 import {
   listTasks,
   createTask,

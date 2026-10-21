@@ -28,6 +28,7 @@ import { QuickActions } from './components/QuickActions';
 import { SettingsModal } from './components/SettingsModal';
 import { JarvisCompanion } from './components/JarvisCompanion';
 import { TasksDashboard } from './components/TasksDashboard';
+import { FeedbackDashboard } from './components/FeedbackDashboard';
 import { desktopAdapter } from './services/desktopAdapter';
 import './App.css';
 
@@ -44,7 +45,7 @@ const DEFAULT_SETTINGS: UserSettings = {
 
 function App() {
   // Navigation View: 'library' (ChatGPT-style Conversation Archive) vs 'cockpit' (Full HUD Deck) vs 'tasks' (Tasks & Reminders)
-  const [activeView, setActiveView] = useState<'library' | 'cockpit' | 'tasks'>('library');
+  const [activeView, setActiveView] = useState<'library' | 'cockpit' | 'tasks' | 'feedback'>('library');
 
   // Core & Modal states
   const [coreState, setCoreState] = useState<CoreState>('idle');
@@ -64,7 +65,6 @@ function App() {
 
   // Backend connection status
   const [isBackendOnline, setIsBackendOnline] = useState<boolean>(true);
-  const [backendError, setBackendError] = useState<string | null>(null);
 
   // =========================================================================
   // Persistent Conversation State (Stage 4B)
@@ -106,7 +106,6 @@ function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioBlobUrlRef = useRef<string | null>(null);
   const playbackIdRef = useRef(0);
-  const [autoplayBlocked, setAutoplayBlocked] = useState(false);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
 
   // Synchronize companion visibility with desktop adapter
@@ -120,7 +119,6 @@ function App() {
   // Stop any currently-playing audio and clean up its resources.
   const stopAudio = useCallback(() => {
     playbackIdRef.current += 1;
-    setAutoplayBlocked(false);
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.src = '';
@@ -161,7 +159,6 @@ function App() {
       try {
         const res = await listConversations(settings.fastApiUrl);
         setIsBackendOnline(true);
-        setBackendError(null);
         setConversations(res.conversations || []);
         setActiveConversationId(res.active_conversation_id);
 
@@ -177,8 +174,7 @@ function App() {
         });
       } catch (err: unknown) {
         setIsBackendOnline(false);
-        const msg = err instanceof Error ? err.message : 'Unable to connect to local backend.';
-        setBackendError(msg);
+        console.error(err instanceof Error ? err.message : 'Unable to connect to local backend.');
       }
     },
     [settings.useFastApiBackend, settings.fastApiUrl]
@@ -203,17 +199,25 @@ function App() {
 
   // Initial load
   useEffect(() => {
-    setIsLoadingConversations(true);
-    refreshConversations().finally(() => setIsLoadingConversations(false));
+    const timer = window.setTimeout(() => {
+      setIsLoadingConversations(true);
+      refreshConversations().finally(() => setIsLoadingConversations(false));
+    }, 0);
+
+    return () => window.clearTimeout(timer);
   }, [refreshConversations]);
 
   // When selected conversation changes, load its messages
   useEffect(() => {
-    if (selectedConversationId) {
-      loadMessages(selectedConversationId);
-    } else {
-      setConversationMessages([]);
-    }
+    const timer = window.setTimeout(() => {
+      if (selectedConversationId) {
+        loadMessages(selectedConversationId);
+      } else {
+        setConversationMessages([]);
+      }
+    }, 0);
+
+    return () => window.clearTimeout(timer);
   }, [selectedConversationId, loadMessages]);
 
   // Periodic poll to keep conversations and active messages synchronized
@@ -244,10 +248,12 @@ function App() {
     checkBackendHealth(settings.fastApiUrl)
       .then((health) => {
         setIsBackendOnline(true);
+        const nextStatus =
+          health.status === 'healthy' ? 'nominal' : health.status === 'degraded' ? 'optimizing' : 'offline';
         setTelemetry((prev) => ({
           ...prev,
-          modelName: health.active_model || settings.model,
-          status: health.status === 'ok' ? 'nominal' : 'optimizing',
+          modelName: health.ollama.configured_model || settings.model,
+          status: nextStatus,
         }));
       })
       .catch(() => {
@@ -473,6 +479,15 @@ function App() {
             onClick={() => setActiveView('tasks')}
           >
             📋 Tasks & Reminders
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeView === 'feedback'}
+            className={`view-mode-tab ${activeView === 'feedback' ? 'active' : ''}`}
+            onClick={() => setActiveView('feedback')}
+          >
+            📝 Feedback
           </button>
         </div>
 
@@ -789,6 +804,11 @@ function App() {
       {/* View 3: Tasks & Reminders Management Dashboard (Stage 5) */}
       {activeView === 'tasks' && (
         <TasksDashboard fastApiUrl={settings.fastApiUrl} />
+      )}
+
+      {/* View 4: Feedback Dashboard (Stage 6.2) */}
+      {activeView === 'feedback' && (
+        <FeedbackDashboard fastApiUrl={settings.fastApiUrl} />
       )}
 
       {/* Settings Modal Drawer */}

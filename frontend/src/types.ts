@@ -169,3 +169,30 @@ export interface NotificationSettings {
   windows_notifications_enabled: boolean;
   spoken_reminders_enabled: boolean;
 }
+
+export interface FeedbackRecord {
+  id: string;
+  transcript: string;
+  summary: string | null;
+  category: string | null;
+  event_name: string | null;
+  tags: string[] | null;
+  created_at: string;
+}
+
+export interface FeedbackListResponse {
+  feedback: FeedbackRecord[];
+  total: number;
+  query?: string;
+}
+
+export interface FeedbackDetailResponse {
+  feedback: FeedbackRecord;
+}
+
+export interface UpdateFeedbackInput {
+  summary?: string | null;
+  category?: string | null;
+  event_name?: string | null;
+  tags?: string[] | null;
+}

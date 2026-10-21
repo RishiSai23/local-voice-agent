@@ -20,7 +20,6 @@ import type {
   Conversation,
   ConversationMessage,
   ConversationsListResponse,
-  ConversationDetailResponse,
   ConversationMessagesResponse,
   Task,
   TasksListResponse,
@@ -28,6 +27,10 @@ import type {
   CreateTaskInput,
   UpdateTaskInput,
   NotificationSettings,
+  FeedbackRecord,
+  FeedbackListResponse,
+  FeedbackDetailResponse,
+  UpdateFeedbackInput,
 } from '../types';
 import type { AgentResponse, BackendHealth } from './agentService';
 
@@ -46,6 +49,14 @@ export interface StopAssistantResponse {
 export interface CancelAssistantResponse {
   status: 'cancelling' | 'nothing_to_cancel';
   state: VoiceAssistantState;
+}
+
+export interface CreateFeedbackInput {
+  transcript: string;
+  summary?: string | null;
+  category?: string | null;
+  event_name?: string | null;
+  tags?: string[] | null;
 }
 
 /**
@@ -898,6 +909,194 @@ export async function triggerSchedulerCheck(
   }
 
   return (await response.json()) as { status: string; claimed_count: number; scheduler_running: boolean };
+}
+
+// ============================================================================
+// Stage 6.1/6.2 — Feedback API Client Methods
+// ============================================================================
+
+function normalizeFeedbackRecord(record: unknown): FeedbackRecord {
+  if (!record || typeof record !== 'object') {
+    throw new Error('Malformed feedback record received from backend.');
+  }
+
+  const candidate = record as Partial<FeedbackRecord>;
+  if (
+    typeof candidate.id !== 'string' ||
+    typeof candidate.transcript !== 'string' ||
+    typeof candidate.created_at !== 'string'
+  ) {
+    throw new Error('Malformed feedback record received from backend.');
+  }
+
+  return {
+    id: candidate.id,
+    transcript: candidate.transcript,
+    summary: typeof candidate.summary === 'string' || candidate.summary === null ? candidate.summary ?? null : null,
+    category: typeof candidate.category === 'string' || candidate.category === null ? candidate.category ?? null : null,
+    event_name:
+      typeof candidate.event_name === 'string' || candidate.event_name === null
+        ? candidate.event_name ?? null
+        : null,
+    tags: Array.isArray(candidate.tags) ? candidate.tags.filter((tag): tag is string => typeof tag === 'string') : null,
+    created_at: candidate.created_at,
+  };
+}
+
+export async function listFeedback(
+  options: { limit?: number } = {},
+  baseUrl: string = DEFAULT_BACKEND_URL
+): Promise<FeedbackListResponse> {
+  const params = new URLSearchParams();
+  if (options.limit) params.set('limit', String(options.limit));
+
+  const url = `${baseUrl}/feedback${params.toString() ? `?${params.toString()}` : ''}`;
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(url, { method: 'GET' }, 5000);
+  } catch {
+    throw new Error(`Unable to load feedback from ${baseUrl}. Backend may be offline.`);
+  }
+
+  if (!response.ok) {
+    const detail = await parseErrorDetail(response, `HTTP ${response.status}`);
+    throw new Error(`Failed to list feedback: ${detail}`);
+  }
+
+  const data = (await response.json()) as { feedback?: unknown; total?: number; query?: string };
+  if (!data || !Array.isArray(data.feedback)) {
+    throw new Error('Malformed feedback list response from backend.');
+  }
+
+  return {
+    feedback: data.feedback.map(normalizeFeedbackRecord),
+    total: typeof data.total === 'number' ? data.total : data.feedback.length,
+    query: typeof data.query === 'string' ? data.query : undefined,
+  };
+}
+
+export async function searchFeedback(
+  query: string,
+  options: { limit?: number } = {},
+  baseUrl: string = DEFAULT_BACKEND_URL
+): Promise<FeedbackListResponse> {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    throw new Error('Query cannot be empty.');
+  }
+
+  const params = new URLSearchParams();
+  params.set('q', trimmed);
+  if (options.limit) params.set('limit', String(options.limit));
+
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(`${baseUrl}/feedback/search?${params.toString()}`, { method: 'GET' }, 5000);
+  } catch {
+    throw new Error(`Unable to search feedback at ${baseUrl}. Backend may be offline.`);
+  }
+
+  if (!response.ok) {
+    const detail = await parseErrorDetail(response, `HTTP ${response.status}`);
+    throw new Error(`Failed to search feedback: ${detail}`);
+  }
+
+  const data = (await response.json()) as { feedback?: unknown; total?: number; query?: string };
+  if (!data || !Array.isArray(data.feedback)) {
+    throw new Error('Malformed feedback search response from backend.');
+  }
+
+  return {
+    feedback: data.feedback.map(normalizeFeedbackRecord),
+    total: typeof data.total === 'number' ? data.total : data.feedback.length,
+    query: typeof data.query === 'string' ? data.query : trimmed,
+  };
+}
+
+export async function getFeedback(
+  feedbackId: string,
+  baseUrl: string = DEFAULT_BACKEND_URL
+): Promise<FeedbackDetailResponse> {
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(`${baseUrl}/feedback/${encodeURIComponent(feedbackId)}`, { method: 'GET' }, 5000);
+  } catch {
+    throw new Error(`Unable to fetch feedback from ${baseUrl}.`);
+  }
+
+  if (!response.ok) {
+    const detail = await parseErrorDetail(response, `HTTP ${response.status}`);
+    throw new Error(`Failed to fetch feedback: ${detail}`);
+  }
+
+  const data = (await response.json()) as { feedback?: unknown };
+  if (!data || !data.feedback) {
+    throw new Error('Malformed feedback detail response from backend.');
+  }
+
+  return { feedback: normalizeFeedbackRecord(data.feedback) };
+}
+
+export async function updateFeedback(
+  feedbackId: string,
+  updates: UpdateFeedbackInput,
+  baseUrl: string = DEFAULT_BACKEND_URL
+): Promise<FeedbackDetailResponse> {
+  const payload: UpdateFeedbackInput = {};
+  if (Object.prototype.hasOwnProperty.call(updates, 'summary')) payload.summary = updates.summary;
+  if (Object.prototype.hasOwnProperty.call(updates, 'category')) payload.category = updates.category;
+  if (Object.prototype.hasOwnProperty.call(updates, 'event_name')) payload.event_name = updates.event_name;
+  if (Object.prototype.hasOwnProperty.call(updates, 'tags')) payload.tags = updates.tags;
+
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(
+      `${baseUrl}/feedback/${encodeURIComponent(feedbackId)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      },
+      5000
+    );
+  } catch {
+    throw new Error(`Unable to update feedback at ${baseUrl}.`);
+  }
+
+  if (!response.ok) {
+    const detail = await parseErrorDetail(response, `HTTP ${response.status}`);
+    throw new Error(`Failed to update feedback: ${detail}`);
+  }
+
+  const data = (await response.json()) as { feedback?: unknown };
+  if (!data || !data.feedback) {
+    throw new Error('Malformed feedback update response from backend.');
+  }
+
+  return { feedback: normalizeFeedbackRecord(data.feedback) };
+}
+
+export async function deleteFeedback(
+  feedbackId: string,
+  baseUrl: string = DEFAULT_BACKEND_URL
+): Promise<{ status: string; feedback_id: string }> {
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(
+      `${baseUrl}/feedback/${encodeURIComponent(feedbackId)}`,
+      { method: 'DELETE' },
+      5000
+    );
+  } catch {
+    throw new Error(`Unable to delete feedback at ${baseUrl}.`);
+  }
+
+  if (!response.ok) {
+    const detail = await parseErrorDetail(response, `HTTP ${response.status}`);
+    throw new Error(`Failed to delete feedback: ${detail}`);
+  }
+
+  return (await response.json()) as { status: string; feedback_id: string };
 }
 
 /**
